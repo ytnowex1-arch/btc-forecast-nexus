@@ -55,6 +55,20 @@ export default function Index() {
     staleTime: 15000,
   });
 
+  const { data: m15Klines } = useQuery({
+    queryKey: ['klines', '15m', 'projection'],
+    queryFn: () => fetchKlines('BTCUSDT', '15m', 300),
+    refetchInterval: 60000,
+    staleTime: 30000,
+  });
+
+  const { data: h4Klines } = useQuery({
+    queryKey: ['klines', '4h', 'projection'],
+    queryFn: () => fetchKlines('BTCUSDT', '4h', 300),
+    refetchInterval: 120000,
+    staleTime: 60000,
+  });
+
   const { data: dailyKlines } = useQuery({
     queryKey: ['klines', '1d', 'strategy'],
     queryFn: () => fetchKlines('BTCUSDT', '1d', 30),
@@ -73,8 +87,13 @@ export default function Index() {
 
   const projection = useMemo(() => {
     if (!klines) return null;
-    return calculateProjection(klines, projPeriods);
-  }, [klines, projPeriods]);
+    return calculateProjection(klines, projPeriods, {
+      m15: m15Klines ?? undefined,
+      h1: h1Klines ?? undefined,
+      h4: h4Klines ?? undefined,
+      d1: dailyKlines ?? undefined,
+    });
+  }, [klines, projPeriods, m15Klines, h1Klines, h4Klines, dailyKlines]);
 
   const signalAnalysis = useMemo(() => {
     if (!indicators || !klines) return null;
@@ -231,7 +250,7 @@ export default function Index() {
                 <IntervalSelector />
               </div>
 
-              <PriceChart klines={klines} indicators={indicators} projection={projection} />
+              <PriceChart klines={klines} projection={projection} />
 
               {/* Position Size Calculator */}
               {currentPrice && dailyATR > 0 && (

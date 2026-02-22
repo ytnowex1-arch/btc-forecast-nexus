@@ -1,5 +1,6 @@
 import type { Kline } from './binance';
 import type { IndicatorResults } from './indicators';
+import { calculateEMA } from './indicators';
 
 export interface ProjectionPoint {
   time: number;
@@ -12,14 +13,94 @@ export interface Projection {
   bearCase: ProjectionPoint[];
 }
 
-export function calculateProjection(klines: Kline[], periods = 72): Projection {
+/* ── Seeded PRNG for deterministic wiggles ── */
+function seededRandom(seed: number) {
+  let s = seed;
+  return () => {
+    s = (s * 16807 + 0) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+
+/* ── Support / Resistance detection ── */
+function findSRLevels(klines: Kline[], bucketSize = 0.005): number[] {
+  const prices = klines.flatMap(k => [k.high, k.low]);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const bucketWidth = max * bucketSize;
+  const buckets = new Map<number, number>();
+
+  for (const p of prices) {
+    const key = Math.round(p / bucketWidth);
+    buckets.set(key, (buckets.get(key) || 0) + 1);
+  }
+
+  const threshold = klines.length * 0.06;
+  const levels: number[] = [];
+  for (const [key, count] of buckets) {
+    if (count >= threshold) levels.push(key * bucketWidth);
+  }
+  return levels.sort((a, b) => a - b);
+}
+
+/* ── Timeframe sentiment ── */
+interface TimeframeSentiment {
+  weight: number;
+  bias: number; // -1 bearish … +1 bullish
+}
+
+function getTimeframeBias(closes: number[]): number {
+  if (closes.length < 200) return 0;
+  const ema50 = calculateEMA(closes, 50);
+  const ema200 = calculateEMA(closes, 200);
+  const last = closes.length - 1;
+  const price = closes[last];
+  const e50 = ema50[last];
+  const e200 = ema200[last];
+
+  let bias = 0;
+  if (price > e200) bias += 0.4;
+  else bias -= 0.4;
+  if (e50 > e200) bias += 0.4;
+  else bias -= 0.4;
+  if (price > e50) bias += 0.2;
+  else bias -= 0.2;
+  return Math.max(-1, Math.min(1, bias));
+}
+
+export function calculateProjection(
+  klines: Kline[],
+  periods = 72,
+  multiTFData?: { m15?: Kline[]; h1?: Kline[]; h4?: Kline[]; d1?: Kline[] }
+): Projection {
   const closes = klines.map(k => k.close);
+  const lastPrice = closes[closes.length - 1];
   const lastTime = klines[klines.length - 1].time;
   const interval = klines.length > 1
     ? klines[klines.length - 1].time - klines[klines.length - 2].time
     : 3600;
 
-  // Linear regression on last 50 candles
+  // ── Multi-timeframe weighted sentiment ──
+  const sentiments: TimeframeSentiment[] = [];
+  if (multiTFData?.m15 && multiTFData.m15.length >= 200)
+    sentiments.push({ weight: 0.1, bias: getTimeframeBias(multiTFData.m15.map(k => k.close)) });
+  if (multiTFData?.h1 && multiTFData.h1.length >= 200)
+    sentiments.push({ weight: 0.3, bias: getTimeframeBias(multiTFData.h1.map(k => k.close)) });
+  if (multiTFData?.h4 && multiTFData.h4.length >= 200)
+    sentiments.push({ weight: 0.35, bias: getTimeframeBias(multiTFData.h4.map(k => k.close)) });
+  if (multiTFData?.d1 && multiTFData.d1.length >= 200)
+    sentiments.push({ weight: 0.25, bias: getTimeframeBias(multiTFData.d1.map(k => k.close)) });
+
+  let weightedBias = 0;
+  if (sentiments.length > 0) {
+    const totalW = sentiments.reduce((s, v) => s + v.weight, 0);
+    weightedBias = sentiments.reduce((s, v) => s + v.bias * v.weight, 0) / totalW;
+  } else {
+    // fallback: use current klines
+    if (closes.length >= 200) weightedBias = getTimeframeBias(closes);
+  }
+
+  // ── Linear regression slope on last 50 candles ──
   const n = Math.min(50, closes.length);
   const recent = closes.slice(-n);
   const xMean = (n - 1) / 2;
@@ -30,26 +111,80 @@ export function calculateProjection(klines: Kline[], periods = 72): Projection {
     den += (i - xMean) ** 2;
   }
   const slope = den !== 0 ? num / den : 0;
-  const intercept = yMean - slope * xMean;
 
-  // Volatility from recent std dev
+  // ── Volatility ──
   const std = Math.sqrt(recent.reduce((s, v) => s + (v - yMean) ** 2, 0) / n);
 
+  // ── Support / Resistance levels ──
+  const srLevels = findSRLevels(klines);
+
+  // ── Magnetic pull toward S/R ──
+  const magnetPull = (price: number, strength = 0.03): number => {
+    let closest = Infinity;
+    let closestLevel = price;
+    for (const level of srLevels) {
+      const dist = Math.abs(price - level);
+      if (dist < closest) { closest = dist; closestLevel = level; }
+    }
+    const relDist = closest / price;
+    if (relDist < 0.05) {
+      return (closestLevel - price) * strength;
+    }
+    return 0;
+  };
+
+  // ── Build wiggly paths ──
+  const rng = seededRandom(Math.round(lastTime));
   const baseCase: ProjectionPoint[] = [];
   const bullCase: ProjectionPoint[] = [];
   const bearCase: ProjectionPoint[] = [];
 
-  for (let i = 0; i <= periods; i++) {
-    const time = lastTime + (i + 1) * interval;
-    const baseValue = intercept + slope * (n - 1 + i);
-    const spread = std * (1 + i * 0.015);
-    baseCase.push({ time, value: baseValue });
-    bullCase.push({ time, value: baseValue + spread });
-    bearCase.push({ time, value: Math.max(baseValue - spread, 0) });
+  let baseVal = lastPrice;
+  let bullVal = lastPrice;
+  let bearVal = lastPrice;
+
+  // Bias-adjusted slopes
+  const baseSlopePerStep = slope * (1 + weightedBias * 0.5);
+  const bullSlopePerStep = slope + Math.abs(slope) * 0.3 + std * 0.01;
+  const bearSlopePerStep = slope - Math.abs(slope) * 0.3 - std * 0.01;
+
+  const LOG_FLOOR = lastPrice * 0.05; // absolute minimum (5% of current price)
+
+  for (let i = 1; i <= periods; i++) {
+    const time = lastTime + i * interval;
+    const t = i / periods; // 0→1 progress
+
+    // Time-decay volatility cone
+    const volScale = std * 0.15 * Math.sqrt(i);
+
+    // Wiggles (deterministic noise)
+    const wiggle1 = (rng() - 0.5) * volScale * 0.6;
+    const wiggle2 = (rng() - 0.5) * volScale * 0.6;
+    const wiggle3 = (rng() - 0.5) * volScale * 0.6;
+
+    // Step values
+    baseVal += baseSlopePerStep + wiggle1 + magnetPull(baseVal, 0.02);
+    bullVal += bullSlopePerStep + volScale * 0.12 + wiggle2 + magnetPull(bullVal, 0.015);
+    bearVal += bearSlopePerStep - volScale * 0.12 + wiggle3 + magnetPull(bearVal, 0.025);
+
+    // Ensure cone widens: bull >= base >= bear
+    bullVal = Math.max(bullVal, baseVal + volScale * 0.3);
+    bearVal = Math.min(bearVal, baseVal - volScale * 0.3);
+
+    // Logarithmic floor — never go below LOG_FLOOR
+    const applyFloor = (v: number) => Math.max(v, LOG_FLOOR * (1 + Math.log(1 + t)));
+
+    baseCase.push({ time, value: applyFloor(baseVal) });
+    bullCase.push({ time, value: applyFloor(bullVal) });
+    bearCase.push({ time, value: applyFloor(bearVal) });
   }
 
   return { baseCase, bullCase, bearCase };
 }
+
+/* ────────────────────────────────────────────
+   Signal analysis — unchanged from before
+   ──────────────────────────────────────────── */
 
 export interface Signal {
   name: string;
