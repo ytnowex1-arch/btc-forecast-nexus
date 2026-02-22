@@ -7,6 +7,7 @@ import { calculateProjection, analyzeSignals } from '@/lib/forecast';
 import PriceChart from '@/components/trading/PriceChart';
 import IndicatorPanels from '@/components/trading/IndicatorPanels';
 import SignalDashboard from '@/components/trading/SignalDashboard';
+import BotDashboard from '@/components/trading/BotDashboard';
 
 const INTERVALS = [
   { value: '15m', label: '15m', projPeriods: 96 },
@@ -16,8 +17,11 @@ const INTERVALS = [
   { value: '1w', label: '1W', projPeriods: 52 },
 ];
 
+type View = 'analysis' | 'bot';
+
 export default function Index() {
   const [interval, setInterval] = useState('1h');
+  const [view, setView] = useState<View>('analysis');
   const projPeriods = INTERVALS.find(i => i.value === interval)?.projPeriods ?? 72;
 
   const { data: klines, isLoading, error } = useQuery({
@@ -101,6 +105,26 @@ export default function Index() {
         </div>
 
         <div className="flex items-center gap-4">
+          {/* View switcher */}
+          <div className="flex rounded-md border border-border overflow-hidden">
+            <button
+              onClick={() => setView('analysis')}
+              className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
+                view === 'analysis' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              📊 Analiza
+            </button>
+            <button
+              onClick={() => setView('bot')}
+              className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
+                view === 'bot' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              🤖 Bot
+            </button>
+          </div>
+
           {/* 24h stats */}
           <div className="hidden md:flex items-center gap-4 text-xs font-mono text-muted-foreground">
             <div>
@@ -113,62 +137,60 @@ export default function Index() {
             </div>
             <div>
               <span className="block text-[10px] uppercase tracking-wider">24h Vol</span>
-              <span className="text-foreground">{(volume24h).toLocaleString('en-US', { maximumFractionDigits: 0 })} BTC</span>
+              <span className="text-foreground">{volume24h.toLocaleString('en-US', { maximumFractionDigits: 0 })} BTC</span>
             </div>
           </div>
 
           {/* Interval selector */}
-          <div className="flex rounded-md border border-border overflow-hidden">
-            {INTERVALS.map(int => (
-              <button
-                key={int.value}
-                onClick={() => setInterval(int.value)}
-                className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
-                  interval === int.value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-card text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {int.label}
-              </button>
-            ))}
-          </div>
+          {view === 'analysis' && (
+            <div className="flex rounded-md border border-border overflow-hidden">
+              {INTERVALS.map(int => (
+                <button
+                  key={int.value}
+                  onClick={() => setInterval(int.value)}
+                  className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
+                    interval === int.value
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-card text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {int.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </motion.header>
 
-      {isLoading || !klines || !indicators || !projection || !signalAnalysis ? (
-        <div className="flex items-center justify-center h-[400px]">
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm font-mono text-muted-foreground">Ładowanie danych z Binance...</span>
-          </div>
-        </div>
+      {view === 'bot' ? (
+        <BotDashboard />
       ) : (
         <>
-          {/* Signal Dashboard */}
-          <SignalDashboard
-            signals={signalAnalysis.signals}
-            confidence={signalAnalysis.confidence}
-            bias={signalAnalysis.bias}
-          />
-
-          {/* Price Chart */}
-          <PriceChart
-            klines={klines}
-            indicators={indicators}
-            projection={projection}
-          />
-
-          {/* Indicator Panels */}
-          <IndicatorPanels klines={klines} indicators={indicators} />
-
-          {/* Footer */}
-          <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
-            Dane z Binance API • Odświeżanie co 30s • Projekcje oparte na regresji liniowej + Bollinger Bands •
-            <span className="text-warning"> Nie stanowi porady inwestycyjnej</span>
-          </div>
+          {isLoading || !klines || !indicators || !projection || !signalAnalysis ? (
+            <div className="flex items-center justify-center h-[400px]">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                <span className="text-sm font-mono text-muted-foreground">Ładowanie danych z Binance...</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <SignalDashboard
+                signals={signalAnalysis.signals}
+                confidence={signalAnalysis.confidence}
+                bias={signalAnalysis.bias}
+              />
+              <PriceChart klines={klines} indicators={indicators} projection={projection} />
+              <IndicatorPanels klines={klines} indicators={indicators} />
+            </>
+          )}
         </>
       )}
+
+      <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
+        Dane z Binance API • Odświeżanie co 30s • Projekcje oparte na regresji liniowej + Bollinger Bands •
+        <span className="text-warning"> Nie stanowi porady inwestycyjnej • Paper Trading — bez prawdziwych pieniędzy</span>
+      </div>
     </div>
   );
 }
