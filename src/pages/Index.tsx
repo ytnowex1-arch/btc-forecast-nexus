@@ -4,9 +4,12 @@ import { motion } from 'framer-motion';
 import { fetchKlines, fetch24hStats } from '@/lib/binance';
 import { calculateAllIndicators } from '@/lib/indicators';
 import { calculateProjection, analyzeSignals } from '@/lib/forecast';
+import { runStrategy, getDailyATR } from '@/lib/strategy';
 import PriceChart from '@/components/trading/PriceChart';
 import IndicatorPanels from '@/components/trading/IndicatorPanels';
 import SignalDashboard from '@/components/trading/SignalDashboard';
+import StrategyPanel from '@/components/trading/StrategyPanel';
+import PositionSizeCalculator from '@/components/trading/PositionSizeCalculator';
 import BotDashboard from '@/components/trading/BotDashboard';
 
 const INTERVALS = [
@@ -37,6 +40,28 @@ export default function Index() {
     refetchInterval: 10000,
   });
 
+  // Multi-timeframe data
+  const { data: h1Klines } = useQuery({
+    queryKey: ['klines', '1h', 'strategy'],
+    queryFn: () => fetchKlines('BTCUSDT', '1h', 300),
+    refetchInterval: 60000,
+    staleTime: 30000,
+  });
+
+  const { data: m5Klines } = useQuery({
+    queryKey: ['klines', '5m', 'strategy'],
+    queryFn: () => fetchKlines('BTCUSDT', '5m', 300),
+    refetchInterval: 30000,
+    staleTime: 15000,
+  });
+
+  const { data: dailyKlines } = useQuery({
+    queryKey: ['klines', '1d', 'strategy'],
+    queryFn: () => fetchKlines('BTCUSDT', '1d', 30),
+    refetchInterval: 300000,
+    staleTime: 60000,
+  });
+
   const indicators = useMemo(() => {
     if (!klines || klines.length < 200) return null;
     const closes = klines.map(k => k.close);
@@ -56,6 +81,17 @@ export default function Index() {
     return analyzeSignals(indicators, klines.map(k => k.close));
   }, [indicators, klines]);
 
+  const strategyResult = useMemo(() => {
+    if (!h1Klines || !m5Klines || !dailyKlines) return null;
+    if (h1Klines.length < 200 || m5Klines.length < 60 || dailyKlines.length < 15) return null;
+    return runStrategy(h1Klines, m5Klines, dailyKlines);
+  }, [h1Klines, m5Klines, dailyKlines]);
+
+  const dailyATR = useMemo(() => {
+    if (!dailyKlines || dailyKlines.length < 15) return 0;
+    return getDailyATR(dailyKlines);
+  }, [dailyKlines]);
+
   const currentPrice = klines?.[klines.length - 1]?.close;
   const priceChange = stats ? parseFloat(stats.priceChangePercent) : 0;
   const volume24h = stats ? parseFloat(stats.volume) : 0;
@@ -72,6 +108,24 @@ export default function Index() {
       </div>
     );
   }
+
+  const IntervalSelector = () => (
+    <div className="flex rounded-md border border-border overflow-hidden">
+      {INTERVALS.map(int => (
+        <button
+          key={int.value}
+          onClick={() => setInterval(int.value)}
+          className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
+            interval === int.value
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-card text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {int.label}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div className="min-h-screen p-3 md:p-4 max-w-[1800px] mx-auto space-y-4">
@@ -141,22 +195,10 @@ export default function Index() {
             </div>
           </div>
 
-          {/* Interval selector */}
+          {/* Interval selector — desktop only in header */}
           {view === 'analysis' && (
-            <div className="flex rounded-md border border-border overflow-hidden">
-              {INTERVALS.map(int => (
-                <button
-                  key={int.value}
-                  onClick={() => setInterval(int.value)}
-                  className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
-                    interval === int.value
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-card text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  {int.label}
-                </button>
-              ))}
+            <div className="hidden md:block">
+              <IntervalSelector />
             </div>
           )}
         </div>
@@ -175,12 +217,27 @@ export default function Index() {
             </div>
           ) : (
             <>
+              {/* Strategy Panel */}
+              {strategyResult && <StrategyPanel strategy={strategyResult} />}
+
               <SignalDashboard
                 signals={signalAnalysis.signals}
                 confidence={signalAnalysis.confidence}
                 bias={signalAnalysis.bias}
               />
+
+              {/* Interval selector — mobile only, above chart */}
+              <div className="md:hidden flex justify-center">
+                <IntervalSelector />
+              </div>
+
               <PriceChart klines={klines} indicators={indicators} projection={projection} />
+
+              {/* Position Size Calculator */}
+              {currentPrice && dailyATR > 0 && (
+                <PositionSizeCalculator currentPrice={currentPrice} dailyATR={dailyATR} />
+              )}
+
               <IndicatorPanels klines={klines} indicators={indicators} />
             </>
           )}
@@ -188,7 +245,7 @@ export default function Index() {
       )}
 
       <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
-        Dane z Binance API • Odświeżanie co 30s • Projekcje oparte na regresji liniowej + Bollinger Bands •
+        Dane z Binance API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M5 + Daily) •
         <span className="text-warning"> Nie stanowi porady inwestycyjnej • Paper Trading — bez prawdziwych pieniędzy</span>
       </div>
     </div>
