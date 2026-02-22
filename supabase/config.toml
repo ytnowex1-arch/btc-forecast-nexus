@@ -1,1 +1,4 @@
 project_id = "maxeahbntaoedqnrjfyu"
+
+[functions.trading-bot]
+verify_jwt = false

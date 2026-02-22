@@ -14,7 +14,217 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      bot_config: {
+        Row: {
+          created_at: string
+          current_balance: number
+          id: string
+          initial_balance: number
+          interval: string
+          is_active: boolean
+          leverage: number
+          name: string
+          position_size_pct: number
+          stop_loss_pct: number
+          strategy: string
+          symbol: string
+          take_profit_pct: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          current_balance?: number
+          id?: string
+          initial_balance?: number
+          interval?: string
+          is_active?: boolean
+          leverage?: number
+          name?: string
+          position_size_pct?: number
+          stop_loss_pct?: number
+          strategy?: string
+          symbol?: string
+          take_profit_pct?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          current_balance?: number
+          id?: string
+          initial_balance?: number
+          interval?: string
+          is_active?: boolean
+          leverage?: number
+          name?: string
+          position_size_pct?: number
+          stop_loss_pct?: number
+          strategy?: string
+          symbol?: string
+          take_profit_pct?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      bot_logs: {
+        Row: {
+          bot_config_id: string | null
+          created_at: string
+          data: Json | null
+          id: string
+          level: string
+          message: string
+        }
+        Insert: {
+          bot_config_id?: string | null
+          created_at?: string
+          data?: Json | null
+          id?: string
+          level?: string
+          message: string
+        }
+        Update: {
+          bot_config_id?: string | null
+          created_at?: string
+          data?: Json | null
+          id?: string
+          level?: string
+          message?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_logs_bot_config_id_fkey"
+            columns: ["bot_config_id"]
+            isOneToOne: false
+            referencedRelation: "bot_config"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_positions: {
+        Row: {
+          bot_config_id: string | null
+          closed_at: string | null
+          entry_price: number
+          entry_reason: string | null
+          exit_price: number | null
+          exit_reason: string | null
+          id: string
+          leverage: number
+          margin_used: number
+          opened_at: string
+          pnl: number | null
+          pnl_pct: number | null
+          quantity: number
+          side: string
+          status: string
+          stop_loss: number | null
+          take_profit: number | null
+        }
+        Insert: {
+          bot_config_id?: string | null
+          closed_at?: string | null
+          entry_price: number
+          entry_reason?: string | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          id?: string
+          leverage?: number
+          margin_used: number
+          opened_at?: string
+          pnl?: number | null
+          pnl_pct?: number | null
+          quantity: number
+          side: string
+          status?: string
+          stop_loss?: number | null
+          take_profit?: number | null
+        }
+        Update: {
+          bot_config_id?: string | null
+          closed_at?: string | null
+          entry_price?: number
+          entry_reason?: string | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          id?: string
+          leverage?: number
+          margin_used?: number
+          opened_at?: string
+          pnl?: number | null
+          pnl_pct?: number | null
+          quantity?: number
+          side?: string
+          status?: string
+          stop_loss?: number | null
+          take_profit?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_positions_bot_config_id_fkey"
+            columns: ["bot_config_id"]
+            isOneToOne: false
+            referencedRelation: "bot_config"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_trades: {
+        Row: {
+          action: string
+          balance_after: number | null
+          bot_config_id: string | null
+          created_at: string
+          id: string
+          indicators_snapshot: Json | null
+          pnl: number | null
+          position_id: string | null
+          price: number
+          quantity: number
+          reason: string | null
+        }
+        Insert: {
+          action: string
+          balance_after?: number | null
+          bot_config_id?: string | null
+          created_at?: string
+          id?: string
+          indicators_snapshot?: Json | null
+          pnl?: number | null
+          position_id?: string | null
+          price: number
+          quantity: number
+          reason?: string | null
+        }
+        Update: {
+          action?: string
+          balance_after?: number | null
+          bot_config_id?: string | null
+          created_at?: string
+          id?: string
+          indicators_snapshot?: Json | null
+          pnl?: number | null
+          position_id?: string | null
+          price?: number
+          quantity?: number
+          reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_trades_bot_config_id_fkey"
+            columns: ["bot_config_id"]
+            isOneToOne: false
+            referencedRelation: "bot_config"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bot_trades_position_id_fkey"
+            columns: ["position_id"]
+            isOneToOne: false
+            referencedRelation: "bot_positions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
