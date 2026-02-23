@@ -194,26 +194,86 @@ export default function BotDashboard() {
         <StatCard label="Łącznie transakcji" value={String(trades.length)} />
       </div>
 
-      {/* Open Position */}
+      {/* Open Position with Trailing SL Visualization */}
       {openPositions.length > 0 && (
-        <div className="rounded-lg border border-primary/30 glow-primary bg-card p-4">
-          <h3 className="text-xs font-mono text-muted-foreground uppercase tracking-wider mb-3">Otwarte pozycje</h3>
+        <div className="rounded-lg border border-primary/30 glow-primary bg-card p-4 space-y-4">
+          <h3 className="text-xs font-mono text-muted-foreground uppercase tracking-wider">Otwarte pozycje</h3>
           {openPositions.map(pos => {
-            const currentPnl = pos.pnl ?? 0;
+            const entry = Number(pos.entry_price);
+            const sl = Number(pos.stop_loss);
+            const tp = Number(pos.take_profit);
+            const slMoved = pos.side === 'long' ? sl > entry * (1 - Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 1.005 : sl < entry * (1 + Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 0.995;
+            const range = tp - (pos.side === 'long' ? entry - (entry - sl) * 2 : entry + (sl - entry) * 2);
+            const slPct = pos.side === 'long'
+              ? ((sl - (entry - Math.abs(tp - entry))) / range) * 100
+              : (((entry + Math.abs(entry - tp)) - sl) / range) * 100;
+            const entryPct = pos.side === 'long'
+              ? ((entry - (entry - Math.abs(tp - entry))) / range) * 100
+              : (((entry + Math.abs(entry - tp)) - entry) / range) * 100;
+
+            // Simpler bar: SL on left, TP on right, entry marked
+            const barMin = Math.min(sl, entry, tp);
+            const barMax = Math.max(sl, entry, tp);
+            const barRange = barMax - barMin || 1;
+            const entryPos = ((entry - barMin) / barRange) * 100;
+            const slPos = ((sl - barMin) / barRange) * 100;
+            const tpPos = ((tp - barMin) / barRange) * 100;
+
             return (
-              <div key={pos.id} className="flex items-center justify-between text-sm font-mono">
-                <div className="flex items-center gap-3">
-                  <span className={`font-bold ${pos.side === 'long' ? 'text-bullish' : 'text-bearish'}`}>
-                    {pos.side === 'long' ? '↑ LONG' : '↓ SHORT'}
-                  </span>
-                  <span className="text-foreground">${Number(pos.entry_price).toFixed(2)}</span>
-                  <span className="text-muted-foreground">x{pos.leverage}</span>
-                  <span className="text-muted-foreground">{Number(pos.quantity).toFixed(6)} BTC</span>
+              <div key={pos.id} className="space-y-2">
+                <div className="flex items-center justify-between text-sm font-mono">
+                  <div className="flex items-center gap-3">
+                    <span className={`font-bold ${pos.side === 'long' ? 'text-bullish' : 'text-bearish'}`}>
+                      {pos.side === 'long' ? '↑ LONG' : '↓ SHORT'}
+                    </span>
+                    <span className="text-foreground">${entry.toFixed(2)}</span>
+                    <span className="text-muted-foreground">x{pos.leverage}</span>
+                    <span className="text-muted-foreground">{Number(pos.quantity).toFixed(6)} BTC</span>
+                  </div>
+                  <span className="text-muted-foreground text-xs">Margin: ${Number(pos.margin_used).toFixed(2)}</span>
                 </div>
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="text-muted-foreground">SL: ${Number(pos.stop_loss).toFixed(0)}</span>
-                  <span className="text-muted-foreground">TP: ${Number(pos.take_profit).toFixed(0)}</span>
-                  <span className="text-muted-foreground">Margin: ${Number(pos.margin_used).toFixed(2)}</span>
+
+                {/* SL / Entry / TP visual bar */}
+                <div className="relative h-6 rounded-md bg-muted/30 border border-border overflow-hidden">
+                  {/* SL→Entry zone (risk) */}
+                  <div
+                    className="absolute top-0 h-full bg-bearish/15"
+                    style={{
+                      left: `${Math.min(slPos, entryPos)}%`,
+                      width: `${Math.abs(entryPos - slPos)}%`,
+                    }}
+                  />
+                  {/* Entry→TP zone (reward) */}
+                  <div
+                    className="absolute top-0 h-full bg-bullish/15"
+                    style={{
+                      left: `${Math.min(entryPos, tpPos)}%`,
+                      width: `${Math.abs(tpPos - entryPos)}%`,
+                    }}
+                  />
+                  {/* SL marker */}
+                  <div className="absolute top-0 h-full w-0.5 bg-bearish" style={{ left: `${slPos}%` }} />
+                  {/* Entry marker */}
+                  <div className="absolute top-0 h-full w-0.5 bg-foreground/50" style={{ left: `${entryPos}%` }} />
+                  {/* TP marker */}
+                  <div className="absolute top-0 h-full w-0.5 bg-bullish" style={{ left: `${tpPos}%` }} />
+
+                  {/* Labels */}
+                  <span className="absolute text-[9px] font-mono text-bearish font-bold" style={{ left: `${slPos}%`, top: '1px', transform: 'translateX(-50%)' }}>SL</span>
+                  <span className="absolute text-[9px] font-mono text-muted-foreground" style={{ left: `${entryPos}%`, bottom: '1px', transform: 'translateX(-50%)' }}>ENTRY</span>
+                  <span className="absolute text-[9px] font-mono text-bullish font-bold" style={{ left: `${tpPos}%`, top: '1px', transform: 'translateX(-50%)' }}>TP</span>
+                </div>
+
+                {/* Numeric details */}
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <div className="flex items-center gap-1">
+                    <span className="text-bearish">SL: ${sl.toFixed(0)}</span>
+                    {slMoved && (
+                      <span className="text-warning animate-pulse">🔒 Trailing</span>
+                    )}
+                  </div>
+                  <span className="text-muted-foreground">Entry: ${entry.toFixed(0)}</span>
+                  <span className="text-bullish">TP: ${tp.toFixed(0)}</span>
                 </div>
               </div>
             );
