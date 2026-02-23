@@ -195,6 +195,22 @@ serve(async (req) => {
         });
       }
 
+      if (action === 'reset_balance') {
+        const newBalance = body.new_balance || config.initial_balance;
+        // Close all open positions
+        await supabase.from('bot_positions').delete().eq('bot_config_id', config.id).eq('status', 'open');
+        // Clear trade history and logs
+        await supabase.from('bot_trades').delete().eq('bot_config_id', config.id);
+        await supabase.from('bot_logs').delete().eq('bot_config_id', config.id);
+        // Reset balances
+        await supabase.from('bot_config').update({
+          is_active: false, current_balance: newBalance, initial_balance: newBalance,
+        }).eq('id', config.id);
+        await logBot(supabase, config.id, 'info', `💰 Saldo zresetowane do $${newBalance}`);
+        return new Response(JSON.stringify({ message: `Balance reset to ${newBalance}` }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
       if (action === 'update_config') {
         const { leverage, position_size_pct, stop_loss_pct, take_profit_pct, interval } = body;
         await supabase.from('bot_config').update({
