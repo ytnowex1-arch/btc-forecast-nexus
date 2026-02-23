@@ -233,7 +233,7 @@ serve(async (req) => {
     
     const analysis = analyzeMarket(closes, highs, lows);
 
-    // Check open positions for SL/TP/Liquidation
+    // Check open positions — smart management with trailing SL & dynamic exits
     const { data: openPositions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).eq('status', 'open');
 
@@ -244,14 +244,16 @@ serve(async (req) => {
       const qty = Number(pos.quantity);
       const leverage = Number(pos.leverage);
       const margin = Number(pos.margin_used);
+      const currentSL = Number(pos.stop_loss);
+      const currentTP = Number(pos.take_profit);
       
       const pnl = pos.side === 'long'
         ? (currentPrice - entryPrice) * qty
         : (entryPrice - currentPrice) * qty;
       const pnlPct = (pnl / margin) * 100;
 
-      // Liquidation check (lose all margin)
-      const liqThreshold = -90; // -90% of margin = liquidated
+      // --- 1. Liquidation check ---
+      const liqThreshold = -90;
       if (pnlPct <= liqThreshold) {
         balance -= margin;
         await supabase.from('bot_positions').update({
@@ -263,14 +265,14 @@ serve(async (req) => {
           price: currentPrice, quantity: qty, pnl: -margin, balance_after: balance,
           reason: `Liquidated at $${currentPrice.toFixed(2)}`,
         });
-        await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} pozycja zlikwidowana! PnL: -$${margin.toFixed(2)}`);
+        await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} zlikwidowana! PnL: -$${margin.toFixed(2)}`);
         continue;
       }
 
-      // Stop loss
-      if (pos.stop_loss && (
-        (pos.side === 'long' && currentPrice <= Number(pos.stop_loss)) ||
-        (pos.side === 'short' && currentPrice >= Number(pos.stop_loss))
+      // --- 2. Stop Loss hit ---
+      if (currentSL && (
+        (pos.side === 'long' && currentPrice <= currentSL) ||
+        (pos.side === 'short' && currentPrice >= currentSL)
       )) {
         balance += margin + pnl;
         await supabase.from('bot_positions').update({
@@ -286,10 +288,10 @@ serve(async (req) => {
         continue;
       }
 
-      // Take profit
-      if (pos.take_profit && (
-        (pos.side === 'long' && currentPrice >= Number(pos.take_profit)) ||
-        (pos.side === 'short' && currentPrice <= Number(pos.take_profit))
+      // --- 3. Take Profit hit ---
+      if (currentTP && (
+        (pos.side === 'long' && currentPrice >= currentTP) ||
+        (pos.side === 'short' && currentPrice <= currentTP)
       )) {
         balance += margin + pnl;
         await supabase.from('bot_positions').update({
@@ -305,7 +307,96 @@ serve(async (req) => {
         continue;
       }
 
-      // Close position if signal reverses
+      // --- 4. TRAILING STOP LOSS — protect profits dynamically ---
+      // Move SL progressively as price moves in our favor
+      const slDistance = Math.abs(entryPrice - currentSL);
+      let newSL = currentSL;
+
+      if (pos.side === 'long') {
+        // When price moves up, trail SL behind it
+        if (pnlPct >= 50) {
+          // At 50%+ profit: tight trail — SL at current price minus 30% of original SL distance
+          newSL = Math.max(currentSL, currentPrice - slDistance * 0.3);
+        } else if (pnlPct >= 25) {
+          // At 25%+ profit: medium trail — SL at current price minus 50% of original SL distance
+          newSL = Math.max(currentSL, currentPrice - slDistance * 0.5);
+        } else if (pnlPct >= 10) {
+          // At 10%+ profit: move SL to breakeven + small buffer
+          newSL = Math.max(currentSL, entryPrice + slDistance * 0.05);
+        }
+      } else {
+        // SHORT: mirror logic — SL moves down as price drops
+        if (pnlPct >= 50) {
+          newSL = Math.min(currentSL, currentPrice + slDistance * 0.3);
+        } else if (pnlPct >= 25) {
+          newSL = Math.min(currentSL, currentPrice + slDistance * 0.5);
+        } else if (pnlPct >= 10) {
+          newSL = Math.min(currentSL, entryPrice - slDistance * 0.05);
+        }
+      }
+
+      if (newSL !== currentSL) {
+        await supabase.from('bot_positions').update({ stop_loss: newSL }).eq('id', pos.id);
+        await logBot(supabase, config.id, 'info',
+          `🔒 TRAILING SL: ${pos.side} SL przesunięty $${currentSL.toFixed(0)} → $${newSL.toFixed(0)} (profit: ${pnlPct.toFixed(1)}%)`);
+      }
+
+      // --- 5. EARLY EXIT on weakening momentum (don't wait for TP) ---
+      // If we're in profit but indicators are weakening, take profit early
+      if (pnlPct >= 15) {
+        let shouldExitEarly = false;
+        let exitReason = '';
+
+        // RSI divergence: overbought in long, oversold in short
+        if (pos.side === 'long' && analysis.rsi > 75) {
+          shouldExitEarly = true;
+          exitReason = `RSI overbought (${analysis.rsi.toFixed(1)}) — zabierz zysk`;
+        } else if (pos.side === 'short' && analysis.rsi < 25) {
+          shouldExitEarly = true;
+          exitReason = `RSI oversold (${analysis.rsi.toFixed(1)}) — zabierz zysk`;
+        }
+
+        // MACD losing momentum while in profit
+        if (!shouldExitEarly && pnlPct >= 20) {
+          if (pos.side === 'long' && analysis.macdHist < 0 && analysis.score < 0) {
+            shouldExitEarly = true;
+            exitReason = `MACD bearish + słabnący trend — zabierz zysk`;
+          } else if (pos.side === 'short' && analysis.macdHist > 0 && analysis.score > 0) {
+            shouldExitEarly = true;
+            exitReason = `MACD bullish + zmiana trendu — zabierz zysk`;
+          }
+        }
+
+        // Bollinger band extreme — price at outer band, likely to revert
+        if (!shouldExitEarly && pnlPct >= 15) {
+          if (pos.side === 'long' && analysis.bbPosition > 0.95) {
+            shouldExitEarly = true;
+            exitReason = `Cena przy górnym Bollinger Band — zabierz zysk`;
+          } else if (pos.side === 'short' && analysis.bbPosition < 0.05) {
+            shouldExitEarly = true;
+            exitReason = `Cena przy dolnym Bollinger Band — zabierz zysk`;
+          }
+        }
+
+        if (shouldExitEarly) {
+          balance += margin + pnl;
+          await supabase.from('bot_positions').update({
+            status: 'closed', exit_price: currentPrice, pnl, pnl_pct: pnlPct,
+            closed_at: new Date().toISOString(), exit_reason: exitReason,
+          }).eq('id', pos.id);
+          const closeAction = pos.side === 'long' ? 'close_long' : 'close_short';
+          await supabase.from('bot_trades').insert({
+            bot_config_id: config.id, position_id: pos.id, action: closeAction,
+            price: currentPrice, quantity: qty, pnl, balance_after: balance,
+            reason: `Early exit: ${exitReason} | PnL: ${pnlPct.toFixed(1)}%`,
+            indicators_snapshot: analysis,
+          });
+          await logBot(supabase, config.id, 'trade', `🧠 SMART EXIT: ${pos.side} zamknięta wcześniej. ${exitReason} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+          continue;
+        }
+      }
+
+      // --- 6. Signal reversal exit (stronger threshold than before) ---
       if ((pos.side === 'long' && analysis.bias === 'bearish' && analysis.score < -0.5) ||
           (pos.side === 'short' && analysis.bias === 'bullish' && analysis.score > 0.5)) {
         balance += margin + pnl;
