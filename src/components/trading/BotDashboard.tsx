@@ -141,9 +141,21 @@ export default function BotDashboard() {
   };
 
   const resetBot = async () => {
-    if (!confirm('Resetować bota? Wszystkie otwarte pozycje zostaną zamknięte.')) return;
+    if (!confirm('Resetować bota? Wszystkie otwarte pozycje zostaną zamknięte a saldo wraca do początkowego.')) return;
     setExecuting(true);
     await callBot({ action: 'reset' });
+    await fetchStatus();
+    setExecuting(false);
+  };
+
+  const resetBalance = async () => {
+    const newBalance = prompt('Podaj nowe saldo startowe (np. 10000):', '10000');
+    if (!newBalance) return;
+    const amount = parseFloat(newBalance);
+    if (isNaN(amount) || amount <= 0) { alert('Nieprawidłowa kwota'); return; }
+    if (!confirm(`Resetować saldo do $${amount}? Wszystkie pozycje i historia zostaną wyczyszczone.`)) return;
+    setExecuting(true);
+    await callBot({ action: 'reset_balance', new_balance: amount });
     await fetchStatus();
     setExecuting(false);
   };
@@ -228,6 +240,13 @@ export default function BotDashboard() {
             className="px-3 py-1.5 text-xs font-mono font-semibold rounded-md bg-muted text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
           >
             ↻ Reset
+          </button>
+          <button
+            onClick={resetBalance}
+            disabled={executing}
+            className="px-3 py-1.5 text-xs font-mono font-semibold rounded-md bg-warning/20 text-warning hover:bg-warning/30 disabled:opacity-50 transition-colors"
+          >
+            💰 Reset salda
           </button>
           <button
             onClick={() => setShowConfig(!showConfig)}
