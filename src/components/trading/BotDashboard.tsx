@@ -61,6 +61,21 @@ export default function BotDashboard() {
   const [activeTab, setActiveTab] = useState<'positions' | 'trades' | 'logs'>('positions');
   const [showConfig, setShowConfig] = useState(false);
   const [editConfig, setEditConfig] = useState({ leverage: 5, position_size_pct: 10, stop_loss_pct: 3, take_profit_pct: 6 });
+  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+
+  // Fetch current BTC price
+  useEffect(() => {
+    const fetchPrice = async () => {
+      try {
+        const res = await fetch('https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT');
+        const data = await res.json();
+        setCurrentPrice(parseFloat(data.price));
+      } catch (e) { /* ignore */ }
+    };
+    fetchPrice();
+    const iv = setInterval(fetchPrice, 10000);
+    return () => clearInterval(iv);
+  }, []);
 
   const callBot = useCallback(async (body?: any) => {
     const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
@@ -153,9 +168,23 @@ export default function BotDashboard() {
     );
   }
 
-  const pnl = config ? config.current_balance - config.initial_balance : 0;
-  const pnlPct = config ? ((pnl / config.initial_balance) * 100) : 0;
   const openPositions = positions.filter(p => p.status === 'open');
+
+  // Calculate unrealized P&L for open positions
+  const unrealizedPnl = openPositions.reduce((sum, pos) => {
+    if (!currentPrice) return sum;
+    const entry = Number(pos.entry_price);
+    const qty = Number(pos.quantity);
+    const uPnl = pos.side === 'long'
+      ? (currentPrice - entry) * qty
+      : (entry - currentPrice) * qty;
+    return sum + uPnl;
+  }, 0);
+
+  const realizedPnl = config ? config.current_balance - config.initial_balance : 0;
+  const totalPnl = realizedPnl + unrealizedPnl;
+  const totalPnlPct = config ? ((totalPnl / config.initial_balance) * 100) : 0;
+  const equity = config ? config.current_balance + unrealizedPnl : 0;
 
   return (
     <div className="space-y-4">
@@ -247,12 +276,12 @@ export default function BotDashboard() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Saldo" value={`$${config?.current_balance?.toFixed(2) ?? '0'}`} />
+        <StatCard label="Equity" value={`$${equity.toFixed(2)}`} />
         <StatCard
-          label="P&L"
-          value={`${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
-          sub={`${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`}
-          color={pnl >= 0 ? 'bullish' : 'bearish'}
+          label="P&L (total)"
+          value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
+          sub={`${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%`}
+          color={totalPnl >= 0 ? 'bullish' : 'bearish'}
         />
         <StatCard label="Otwarte pozycje" value={String(openPositions.length)} />
         <StatCard label="Łącznie transakcji" value={String(trades.length)} />
@@ -388,9 +417,26 @@ export default function BotDashboard() {
                         <td className="text-right p-2">${Number(pos.entry_price).toFixed(2)}</td>
                         <td className="text-right p-2">{pos.exit_price ? `$${Number(pos.exit_price).toFixed(2)}` : '—'}</td>
                         <td className={`text-right p-2 font-bold ${
-                          pos.pnl && pos.pnl > 0 ? 'text-bullish' : pos.pnl && pos.pnl < 0 ? 'text-bearish' : ''
+                          (() => {
+                            if (pos.status === 'open' && currentPrice) {
+                              const uPnl = pos.side === 'long'
+                                ? (currentPrice - Number(pos.entry_price)) * Number(pos.quantity)
+                                : (Number(pos.entry_price) - currentPrice) * Number(pos.quantity);
+                              return uPnl >= 0 ? 'text-bullish' : 'text-bearish';
+                            }
+                            return pos.pnl && pos.pnl > 0 ? 'text-bullish' : pos.pnl && pos.pnl < 0 ? 'text-bearish' : '';
+                          })()
                         }`}>
-                          {pos.pnl != null ? `${pos.pnl > 0 ? '+' : ''}$${Number(pos.pnl).toFixed(2)}` : '—'}
+                          {(() => {
+                            if (pos.status === 'open' && currentPrice) {
+                              const uPnl = pos.side === 'long'
+                                ? (currentPrice - Number(pos.entry_price)) * Number(pos.quantity)
+                                : (Number(pos.entry_price) - currentPrice) * Number(pos.quantity);
+                              const uPnlPct = (uPnl / Number(pos.margin_used)) * 100;
+                              return `${uPnl >= 0 ? '+' : ''}$${uPnl.toFixed(2)} (${uPnlPct.toFixed(1)}%)`;
+                            }
+                            return pos.pnl != null ? `${pos.pnl > 0 ? '+' : ''}$${Number(pos.pnl).toFixed(2)}` : '—';
+                          })()}
                         </td>
                         <td className="text-right p-2">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${
