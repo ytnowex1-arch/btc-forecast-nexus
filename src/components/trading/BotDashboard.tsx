@@ -59,6 +59,8 @@ export default function BotDashboard() {
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
   const [activeTab, setActiveTab] = useState<'positions' | 'trades' | 'logs'>('positions');
+  const [showConfig, setShowConfig] = useState(false);
+  const [editConfig, setEditConfig] = useState({ leverage: 5, position_size_pct: 10, stop_loss_pct: 3, take_profit_pct: 6 });
 
   const callBot = useCallback(async (body?: any) => {
     const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
@@ -81,7 +83,15 @@ export default function BotDashboard() {
   const fetchStatus = useCallback(async () => {
     try {
       const data = await callBot();
-      if (data.config) setConfig(data.config);
+      if (data.config) {
+        setConfig(data.config);
+        setEditConfig({
+          leverage: data.config.leverage,
+          position_size_pct: data.config.position_size_pct,
+          stop_loss_pct: data.config.stop_loss_pct,
+          take_profit_pct: data.config.take_profit_pct,
+        });
+      }
       if (data.positions) setPositions(data.positions);
       if (data.trades) setTrades(data.trades);
       if (data.logs) setLogs(data.logs);
@@ -121,6 +131,18 @@ export default function BotDashboard() {
     await callBot({ action: 'reset' });
     await fetchStatus();
     setExecuting(false);
+  };
+
+  const saveConfig = async () => {
+    const leverage = Math.max(1, Math.min(125, Math.round(editConfig.leverage)));
+    const position_size_pct = Math.max(1, Math.min(100, editConfig.position_size_pct));
+    const stop_loss_pct = Math.max(0.5, Math.min(50, editConfig.stop_loss_pct));
+    const take_profit_pct = Math.max(0.5, Math.min(100, editConfig.take_profit_pct));
+    setExecuting(true);
+    await callBot({ action: 'update_config', leverage, position_size_pct, stop_loss_pct, take_profit_pct });
+    await fetchStatus();
+    setExecuting(false);
+    setShowConfig(false);
   };
 
   if (loading) {
@@ -178,8 +200,50 @@ export default function BotDashboard() {
           >
             ↻ Reset
           </button>
+          <button
+            onClick={() => setShowConfig(!showConfig)}
+            className="px-3 py-1.5 text-xs font-mono font-semibold rounded-md bg-muted text-muted-foreground hover:text-foreground transition-colors"
+          >
+            ⚙ Config
+          </button>
         </div>
       </div>
+
+      {/* Config Panel */}
+      <AnimatePresence>
+        {showConfig && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+              <h3 className="text-xs font-mono text-muted-foreground uppercase tracking-wider">Konfiguracja bota</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <ConfigInput label="Leverage" value={editConfig.leverage} suffix="x"
+                  onChange={v => setEditConfig(p => ({ ...p, leverage: v }))} min={1} max={125} step={1} />
+                <ConfigInput label="Pozycja" value={editConfig.position_size_pct} suffix="%"
+                  onChange={v => setEditConfig(p => ({ ...p, position_size_pct: v }))} min={1} max={100} step={1} />
+                <ConfigInput label="Stop Loss" value={editConfig.stop_loss_pct} suffix="%"
+                  onChange={v => setEditConfig(p => ({ ...p, stop_loss_pct: v }))} min={0.5} max={50} step={0.5} />
+                <ConfigInput label="Take Profit" value={editConfig.take_profit_pct} suffix="%"
+                  onChange={v => setEditConfig(p => ({ ...p, take_profit_pct: v }))} min={0.5} max={100} step={0.5} />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setShowConfig(false)}
+                  className="px-3 py-1.5 text-xs font-mono rounded-md bg-muted text-muted-foreground hover:text-foreground transition-colors">
+                  Anuluj
+                </button>
+                <button onClick={saveConfig} disabled={executing}
+                  className="px-3 py-1.5 text-xs font-mono font-semibold rounded-md bg-primary/20 text-primary hover:bg-primary/30 disabled:opacity-50 transition-colors">
+                  💾 Zapisz
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -436,6 +500,27 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
       {sub && <div className={`text-xs font-mono ${
         color === 'bullish' ? 'text-bullish' : color === 'bearish' ? 'text-bearish' : 'text-muted-foreground'
       }`}>{sub}</div>}
+    </div>
+  );
+}
+
+function ConfigInput({ label, value, suffix, onChange, min, max, step }: {
+  label: string; value: number; suffix: string;
+  onChange: (v: number) => void; min: number; max: number; step: number;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">{label}</label>
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          value={value}
+          onChange={e => onChange(Number(e.target.value))}
+          min={min} max={max} step={step}
+          className="w-full bg-muted/50 border border-border rounded px-2 py-1.5 text-sm font-mono text-foreground focus:outline-none focus:border-primary"
+        />
+        <span className="text-xs font-mono text-muted-foreground">{suffix}</span>
+      </div>
     </div>
   );
 }
