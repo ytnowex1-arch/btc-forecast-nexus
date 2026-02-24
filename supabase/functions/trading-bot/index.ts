@@ -26,11 +26,20 @@ async function fetchCurrentPrice(symbol: string): Promise<number> {
   return parseFloat(data.price);
 }
 
-// Indicators
+// ========== INDICATORS ==========
 function ema(data: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const result = [data[0]];
   for (let i = 1; i < data.length; i++) result.push(data[i] * k + result[i-1] * (1-k));
+  return result;
+}
+
+function sma(data: number[], period: number): number[] {
+  const result: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) { result.push(NaN); continue; }
+    result.push(data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period);
+  }
   return result;
 }
 
@@ -59,119 +68,379 @@ function macd(closes: number[]) {
   return { line, signal: sig, hist: line.map((v,i) => v - sig[i]) };
 }
 
-function bollingerBands(closes: number[], period = 20) {
-  const sma: number[] = [];
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period-1) { sma.push(closes[i]); continue; }
-    sma.push(closes.slice(i-period+1, i+1).reduce((a,b) => a+b, 0) / period);
-  }
+function bollingerBands(closes: number[], period = 20, numStdDev = 2) {
+  const mid = sma(closes, period);
   const upper: number[] = [], lower: number[] = [];
   for (let i = 0; i < closes.length; i++) {
-    if (i < period-1) { upper.push(sma[i]+1000); lower.push(sma[i]-1000); continue; }
+    if (i < period-1) { upper.push(NaN); lower.push(NaN); continue; }
     const slice = closes.slice(i-period+1, i+1);
-    const std = Math.sqrt(slice.reduce((s,v) => s + (v-sma[i])**2, 0)/period);
-    upper.push(sma[i] + 2*std);
-    lower.push(sma[i] - 2*std);
+    const std = Math.sqrt(slice.reduce((s,v) => s + (v-mid[i])**2, 0)/period);
+    upper.push(mid[i] + numStdDev*std);
+    lower.push(mid[i] - numStdDev*std);
   }
-  return { upper, middle: sma, lower };
+  return { upper, middle: mid, lower };
 }
 
-function analyzeMarket(closes: number[], highs: number[], lows: number[]) {
+function atr(highs: number[], lows: number[], closes: number[], period = 14): number[] {
+  const tr: number[] = [highs[0] - lows[0]];
+  for (let i = 1; i < closes.length; i++) {
+    tr.push(Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1])));
+  }
+  return ema(tr, period);
+}
+
+// ========== CONTEXT FILTER: Support/Resistance ==========
+function findSupportResistance(highs: number[], lows: number[], closes: number[], lookback = 50) {
   const last = closes.length - 1;
   const price = closes[last];
+  const recentLows = lows.slice(Math.max(0, last - lookback), last + 1);
+  const recentHighs = highs.slice(Math.max(0, last - lookback), last + 1);
+
+  // Find swing lows (support zones)
+  const supports: number[] = [];
+  for (let i = 2; i < recentLows.length - 2; i++) {
+    if (recentLows[i] < recentLows[i-1] && recentLows[i] < recentLows[i-2] &&
+        recentLows[i] < recentLows[i+1] && recentLows[i] < recentLows[i+2]) {
+      supports.push(recentLows[i]);
+    }
+  }
+
+  // Find swing highs (resistance zones)
+  const resistances: number[] = [];
+  for (let i = 2; i < recentHighs.length - 2; i++) {
+    if (recentHighs[i] > recentHighs[i-1] && recentHighs[i] > recentHighs[i-2] &&
+        recentHighs[i] > recentHighs[i+1] && recentHighs[i] > recentHighs[i+2]) {
+      resistances.push(recentHighs[i]);
+    }
+  }
+
+  // Double bottom detection: two similar lows with a bounce between
+  let doubleBottom = false;
+  const tolerance = price * 0.005; // 0.5% tolerance
+  for (let i = 0; i < supports.length - 1; i++) {
+    if (Math.abs(supports[i] - supports[i+1]) < tolerance && price > supports[i]) {
+      doubleBottom = true;
+      break;
+    }
+  }
+
+  // Failed breakout detection: price approached a high but got rejected
+  let failedBreakout = false;
+  if (resistances.length > 0) {
+    const nearestResistance = resistances.reduce((a, b) => 
+      Math.abs(a - price) < Math.abs(b - price) ? a : b);
+    // Price reached within 0.3% of resistance and pulled back
+    const recentHigh = Math.max(...highs.slice(Math.max(0, last - 5), last + 1));
+    if (recentHigh >= nearestResistance * 0.997 && price < nearestResistance) {
+      failedBreakout = true;
+    }
+  }
+
+  // Near support zone check
+  const nearSupport = supports.some(s => price >= s * 0.995 && price <= s * 1.01);
+  // Near resistance zone check
+  const nearResistance = resistances.some(r => price >= r * 0.99 && price <= r * 1.005);
+
+  return { supports, resistances, doubleBottom, failedBreakout, nearSupport, nearResistance };
+}
+
+// ========== THREE-KEY ENTRY CONDITIONS ==========
+
+// Condition A: RSI Divergence
+function detectRSIDivergence(closes: number[], rsiVals: number[], lookback = 20): { bullish: boolean; bearish: boolean } {
+  const last = closes.length - 1;
+  const start = Math.max(0, last - lookback);
   
+  let bullishDiv = false, bearishDiv = false;
+
+  // Find recent swing lows in price and check RSI
+  for (let i = start + 2; i < last - 1; i++) {
+    // Bullish: price makes lower low, RSI makes higher low
+    if (closes[last] < closes[i] && rsiVals[last] > rsiVals[i] && rsiVals[i] < 40) {
+      bullishDiv = true;
+    }
+    // Bearish: price makes higher high, RSI makes lower high
+    if (closes[last] > closes[i] && rsiVals[last] < rsiVals[i] && rsiVals[i] > 60) {
+      bearishDiv = true;
+    }
+  }
+  return { bullish: bullishDiv, bearish: bearishDiv };
+}
+
+// Condition B: Candlestick Patterns
+function detectCandlestickPatterns(klines: Kline[]): { bullish: boolean; bearish: boolean; pattern: string } {
+  const last = klines.length - 1;
+  const c = klines[last], p = klines[last - 1], pp = klines[last - 2];
+  const bodyC = Math.abs(c.close - c.open);
+  const rangeC = c.high - c.low;
+  const bodyP = Math.abs(p.close - p.open);
+  const rangeP = p.high - p.low;
+
+  let bullish = false, bearish = false, pattern = '';
+
+  // Pin Bar (Hammer / Shooting Star)
+  if (rangeC > 0) {
+    const lowerWick = Math.min(c.open, c.close) - c.low;
+    const upperWick = c.high - Math.max(c.open, c.close);
+    // Bullish pin bar (hammer): long lower wick, small body at top
+    if (lowerWick > bodyC * 2 && upperWick < bodyC * 0.5) {
+      bullish = true; pattern = 'Hammer';
+    }
+    // Bearish pin bar (shooting star): long upper wick, small body at bottom
+    if (upperWick > bodyC * 2 && lowerWick < bodyC * 0.5) {
+      bearish = true; pattern = 'Shooting Star';
+    }
+  }
+
+  // Engulfing
+  if (!bullish && !bearish && bodyP > 0) {
+    // Bullish engulfing: prev was red, current is green and engulfs
+    if (p.close < p.open && c.close > c.open && c.close > p.open && c.open < p.close) {
+      bullish = true; pattern = 'Bullish Engulfing';
+    }
+    // Bearish engulfing: prev was green, current is red and engulfs
+    if (p.close > p.open && c.close < c.open && c.close < p.open && c.open > p.close) {
+      bearish = true; pattern = 'Bearish Engulfing';
+    }
+  }
+
+  // Morning Star / Evening Star (3-candle)
+  if (!bullish && !bearish) {
+    const bodyPP = Math.abs(pp.close - pp.open);
+    // Morning Star: big red, small body (doji-ish), big green
+    if (pp.close < pp.open && bodyP < bodyPP * 0.3 && c.close > c.open && bodyC > bodyPP * 0.5) {
+      bullish = true; pattern = 'Morning Star';
+    }
+    // Evening Star: big green, small body, big red
+    if (pp.close > pp.open && bodyP < bodyPP * 0.3 && c.close < c.open && bodyC > bodyPP * 0.5) {
+      bearish = true; pattern = 'Evening Star';
+    }
+  }
+
+  return { bullish, bearish, pattern };
+}
+
+// Condition C: Volume Spike
+function detectVolumeSpike(volumes: number[], lookback = 20): boolean {
+  const last = volumes.length - 1;
+  const avgVol = volumes.slice(Math.max(0, last - lookback), last).reduce((a, b) => a + b, 0) / lookback;
+  return volumes[last] > avgVol * 1.5;
+}
+
+// Condition E: Price outside 2nd StdDev of BB
+function priceOutsideBB2(price: number, bbUpper: number, bbLower: number): { outside: boolean; side: 'above' | 'below' | 'inside' } {
+  if (price > bbUpper) return { outside: true, side: 'above' };
+  if (price < bbLower) return { outside: true, side: 'below' };
+  return { outside: false, side: 'inside' };
+}
+
+// ========== NO-TRADE ZONE CHECKS ==========
+function isChopZone(price: number, ema50Val: number, ema200Val: number): boolean {
+  const midpoint = (ema50Val + ema200Val) / 2;
+  const range = Math.abs(ema50Val - ema200Val);
+  // Price within 20% of the midpoint of the EMA gap
+  return range > 0 && Math.abs(price - midpoint) < range * 0.2;
+}
+
+function isLowVolumeEnvironment(volumes: number[], lookback = 50): boolean {
+  const last = volumes.length - 1;
+  const avgVol = volumes.slice(Math.max(0, last - lookback), last).reduce((a, b) => a + b, 0) / lookback;
+  // Volume less than 40% of average = dead market
+  return volumes[last] < avgVol * 0.4;
+}
+
+// ========== MAIN ANALYSIS ==========
+function analyzeMarket(klines: Kline[]) {
+  const closes = klines.map(k => k.close);
+  const highs = klines.map(k => k.high);
+  const lows = klines.map(k => k.low);
+  const volumes = klines.map(k => k.volume);
+  const last = closes.length - 1;
+  const price = closes[last];
+
   const ema20 = ema(closes, 20);
   const ema50 = ema(closes, 50);
   const ema200 = ema(closes, 200);
   const rsiVals = rsi(closes);
   const macdData = macd(closes);
   const bb = bollingerBands(closes);
-  
+  const atrVals = atr(highs, lows, closes);
+
   const lastRsi = rsiVals[last];
-  const bbPos = (price - bb.lower[last]) / (bb.upper[last] - bb.lower[last]);
+  const lastAtr = atrVals[last];
+  const reasoning: string[] = [];
+
+  // ===== STEP 1: NO-TRADE ZONES =====
+  const chopZone = isChopZone(price, ema50[last], ema200[last]);
+  const lowVolume = isLowVolumeEnvironment(volumes);
+
+  if (chopZone) reasoning.push('🚫 CHOP ZONE: price between EMA50/200 midpoint');
+  if (lowVolume) reasoning.push('🚫 LOW VOLUME: below 40% of average');
+
+  if (chopZone || lowVolume) {
+    return {
+      bias: 'neutral' as const,
+      score: 0,
+      rsi: lastRsi,
+      macdHist: macdData.hist[last],
+      ema50: ema50[last],
+      ema200: ema200[last],
+      bbPosition: 0.5,
+      price,
+      atr: lastAtr,
+      reasoning: reasoning.join(' | '),
+      entryAllowed: false,
+      skipReason: chopZone ? 'Chop Zone — no trend' : 'Low volume — dead market',
+    };
+  }
+
+  // ===== STEP 2: CONTEXT FILTER (Support/Resistance) =====
+  const sr = findSupportResistance(highs, lows, closes);
+  let longContext = false, shortContext = false;
+  const contextReasons: string[] = [];
+
+  if (sr.nearSupport || sr.doubleBottom) {
+    longContext = true;
+    contextReasons.push(sr.doubleBottom ? 'Double Bottom detected ↑' : 'Price near Support Zone ↑');
+  }
+  if (sr.nearResistance || sr.failedBreakout) {
+    shortContext = true;
+    contextReasons.push(sr.failedBreakout ? 'Failed breakout at Resistance ↓' : 'Price near Resistance Zone ↓');
+  }
+  // Also allow based on major trend
+  if (price > ema200[last] && ema50[last] > ema200[last]) {
+    longContext = true;
+    contextReasons.push('Above EMA200 + bullish structure ↑');
+  }
+  if (price < ema200[last] && ema50[last] < ema200[last]) {
+    shortContext = true;
+    contextReasons.push('Below EMA200 + bearish structure ↓');
+  }
+
+  reasoning.push(`Context: ${contextReasons.join(', ') || 'No context'}`);
+
+  // ===== STEP 3: THREE-KEY ENTRY SYSTEM (need 3/5) =====
+  const rsiDiv = detectRSIDivergence(closes, rsiVals);
+  const candles = detectCandlestickPatterns(klines);
+  const volumeSpike = detectVolumeSpike(volumes);
   const prevMacdAbove = macdData.line[last-1] > macdData.signal[last-1];
   const currMacdAbove = macdData.line[last] > macdData.signal[last];
-  
-  // Weighted scoring: each indicator contributes a weight
-  let bullScore = 0, bearScore = 0;
-  const details: string[] = [];
-  
-  // 1. EMA trend structure (weight: 1)
-  if (ema50[last] > ema200[last]) { bullScore += 1; details.push('EMA50>200 ↑'); }
-  else { bearScore += 1; details.push('EMA50<200 ↓'); }
-  
-  // 2. Short-term momentum: price vs EMA20 (weight: 1)
-  if (price > ema20[last]) { bullScore += 1; details.push('Price>EMA20 ↑'); }
-  else { bearScore += 1; details.push('Price<EMA20 ↓'); }
-  
-  // 3. RSI — wider zones with proportional scoring (weight: 1.5)
-  if (lastRsi < 25) { bullScore += 1.5; details.push(`RSI ${lastRsi.toFixed(0)} oversold ↑↑`); }
-  else if (lastRsi < 40) { bullScore += 0.5; details.push(`RSI ${lastRsi.toFixed(0)} low ↑`); }
-  else if (lastRsi > 75) { bearScore += 1.5; details.push(`RSI ${lastRsi.toFixed(0)} overbought ↓↓`); }
-  else if (lastRsi > 60) { bearScore += 0.5; details.push(`RSI ${lastRsi.toFixed(0)} high ↓`); }
-  else { details.push(`RSI ${lastRsi.toFixed(0)} neutral`); }
-  
-  // 4. MACD line vs signal (weight: 1)
-  if (currMacdAbove) { bullScore += 1; details.push('MACD>Signal ↑'); }
-  else { bearScore += 1; details.push('MACD<Signal ↓'); }
-  
-  // 5. MACD crossover — fresh cross is strong signal (weight: 1.5)
-  if (!prevMacdAbove && currMacdAbove) { bullScore += 1.5; details.push('MACD bullish cross ↑↑'); }
-  else if (prevMacdAbove && !currMacdAbove) { bearScore += 1.5; details.push('MACD bearish cross ↓↓'); }
-  
-  // 6. MACD histogram momentum (weight: 0.5)
-  if (macdData.hist[last] > 0 && macdData.hist[last] > macdData.hist[last-1]) { bullScore += 0.5; details.push('MACD hist growing ↑'); }
-  else if (macdData.hist[last] < 0 && macdData.hist[last] < macdData.hist[last-1]) { bearScore += 0.5; details.push('MACD hist falling ↓'); }
-  
-  // 7. Bollinger Band position (weight: 1)
-  if (bbPos < 0.15) { bullScore += 1; details.push('BB oversold ↑'); }
-  else if (bbPos < 0.35) { bullScore += 0.3; details.push('BB low ↑'); }
-  else if (bbPos > 0.85) { bearScore += 1; details.push('BB overbought ↓'); }
-  else if (bbPos > 0.65) { bearScore += 0.3; details.push('BB high ↓'); }
-  
-  // 8. EMA20 vs EMA50 — short-term trend (weight: 1)
-  if (ema20[last] > ema50[last]) { bullScore += 1; details.push('EMA20>50 ↑'); }
-  else { bearScore += 1; details.push('EMA20<50 ↓'); }
+  const macdCrossoverBull = !prevMacdAbove && currMacdAbove;
+  const macdCrossoverBear = prevMacdAbove && !currMacdAbove;
+  const bbCheck = priceOutsideBB2(price, bb.upper[last], bb.lower[last]);
 
-  const maxPossible = 9; // max weight sum per side
-  const score = (bullScore - bearScore) / maxPossible; // normalized -1 to 1
-  
-  // RSI guardrails: prevent shorting oversold / longing overbought
-  let bias: string;
-  if (lastRsi < 30 && score < 0) {
-    bias = 'neutral'; // RSI oversold — don't short!
-    details.push('⚠ RSI guardrail: block short');
-  } else if (lastRsi > 70 && score > 0) {
-    bias = 'neutral'; // RSI overbought — don't long!
-    details.push('⚠ RSI guardrail: block long');
+  // Count bullish conditions
+  let bullKeys = 0, bearKeys = 0;
+  const bullConditions: string[] = [], bearConditions: string[] = [];
+
+  // A: RSI Divergence
+  if (rsiDiv.bullish) { bullKeys++; bullConditions.push('RSI Divergence ↑'); }
+  if (rsiDiv.bearish) { bearKeys++; bearConditions.push('RSI Divergence ↓'); }
+
+  // B: Candlestick Pattern
+  if (candles.bullish) { bullKeys++; bullConditions.push(`${candles.pattern} ↑`); }
+  if (candles.bearish) { bearKeys++; bearConditions.push(`${candles.pattern} ↓`); }
+
+  // C: Volume Spike
+  if (volumeSpike) {
+    // Volume spike confirms the direction of current candle
+    const lastCandle = klines[last];
+    if (lastCandle.close > lastCandle.open) { bullKeys++; bullConditions.push('Volume Spike (bullish) ↑'); }
+    else { bearKeys++; bearConditions.push('Volume Spike (bearish) ↓'); }
+  }
+
+  // D: MACD Crossover
+  if (macdCrossoverBull) { bullKeys++; bullConditions.push('MACD Bullish Cross ↑'); }
+  if (macdCrossoverBear) { bearKeys++; bearConditions.push('MACD Bearish Cross ↓'); }
+
+  // E: Price outside 2nd StdDev BB (mean reversion)
+  if (bbCheck.outside) {
+    if (bbCheck.side === 'below') { bullKeys++; bullConditions.push('Below BB Lower (mean reversion) ↑'); }
+    if (bbCheck.side === 'above') { bearKeys++; bearConditions.push('Above BB Upper (mean reversion) ↓'); }
+  }
+
+  reasoning.push(`Bull keys: ${bullKeys}/5 [${bullConditions.join(', ') || 'none'}]`);
+  reasoning.push(`Bear keys: ${bearKeys}/5 [${bearConditions.join(', ') || 'none'}]`);
+
+  // Determine bias
+  const REQUIRED_KEYS = 3;
+  let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+  let entryAllowed = false;
+  let skipReason = '';
+
+  if (bullKeys >= REQUIRED_KEYS && longContext) {
+    bias = 'bullish';
+    entryAllowed = true;
+  } else if (bearKeys >= REQUIRED_KEYS && shortContext) {
+    bias = 'bearish';
+    entryAllowed = true;
   } else {
-    // Require stronger conviction: threshold 0.15 (was 0.3 on old scale)
-    bias = score > 0.15 ? 'bullish' : score < -0.15 ? 'bearish' : 'neutral';
+    if (bullKeys >= REQUIRED_KEYS && !longContext) {
+      skipReason = `Trade skipped: ${bullKeys}/5 bullish keys met BUT no long context (no support/double bottom)`;
+    } else if (bearKeys >= REQUIRED_KEYS && !shortContext) {
+      skipReason = `Trade skipped: ${bearKeys}/5 bearish keys met BUT no short context (no resistance/failed breakout)`;
+    } else {
+      const maxKeys = Math.max(bullKeys, bearKeys);
+      const direction = bullKeys > bearKeys ? 'bullish' : 'bearish';
+      skipReason = `Trade skipped: Only ${maxKeys}/5 ${direction} conditions met (need ${REQUIRED_KEYS})`;
+    }
   }
-  
-  // Require minimum agreement: at least 3 indicators on the winning side
-  const minAgreement = 3;
-  if (bias === 'bullish' && bullScore < minAgreement) {
-    bias = 'neutral';
-    details.push('⚠ Not enough bullish agreement');
-  } else if (bias === 'bearish' && bearScore < minAgreement) {
-    bias = 'neutral';
-    details.push('⚠ Not enough bearish agreement');
+
+  // RSI guardrails on top
+  if (bias === 'bullish' && lastRsi > 75) {
+    bias = 'neutral'; entryAllowed = false;
+    skipReason = '⚠ RSI guardrail: RSI > 75, blocking long';
   }
-  
+  if (bias === 'bearish' && lastRsi < 25) {
+    bias = 'neutral'; entryAllowed = false;
+    skipReason = '⚠ RSI guardrail: RSI < 25, blocking short';
+  }
+
+  if (skipReason) reasoning.push(skipReason);
+  if (entryAllowed) reasoning.push(`✅ ENTRY ALLOWED: ${bias.toUpperCase()} — ${bias === 'bullish' ? bullConditions.join(' + ') : bearConditions.join(' + ')}`);
+
+  // Legacy score for compatibility
+  const score = bias === 'bullish' ? 0.5 : bias === 'bearish' ? -0.5 : 0;
+
   return {
     bias,
     score,
-    bullish: bullScore,
-    bearish: bearScore,
-    total: bullScore + bearScore,
+    bullKeys,
+    bearKeys,
     rsi: lastRsi,
     macdHist: macdData.hist[last],
     ema50: ema50[last],
     ema200: ema200[last],
-    bbPosition: bbPos,
+    bbPosition: bb.upper[last] && bb.lower[last] ? (price - bb.lower[last]) / (bb.upper[last] - bb.lower[last]) : 0.5,
     price,
-    details: details.join(' | '),
+    atr: lastAtr,
+    reasoning: reasoning.join(' | '),
+    entryAllowed,
+    skipReason,
+    context: { longContext, shortContext, ...sr },
+    conditions: { rsiDiv, candles, volumeSpike, macdCrossoverBull, macdCrossoverBear, bbCheck },
+  };
+}
+
+// ========== RISK-REWARD VALIDATION ==========
+function validateRiskReward(
+  side: string,
+  entryPrice: number,
+  stopLoss: number,
+  takeProfit: number,
+  minRatio = 2
+): { valid: boolean; ratio: number; reason: string } {
+  const risk = Math.abs(entryPrice - stopLoss);
+  const reward = Math.abs(takeProfit - entryPrice);
+  if (risk === 0) return { valid: false, ratio: 0, reason: 'Risk is zero — invalid SL' };
+  const ratio = reward / risk;
+  const valid = ratio >= minRatio;
+  return {
+    valid,
+    ratio,
+    reason: valid
+      ? `R:R ${ratio.toFixed(2)}:1 ✅ (min ${minRatio}:1)`
+      : `R:R ${ratio.toFixed(2)}:1 ❌ — below ${minRatio}:1 minimum, trade discarded`,
   };
 }
 
@@ -185,7 +454,6 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Get bot config
     const { data: configs } = await supabase.from('bot_config').select('*').limit(1);
     if (!configs || configs.length === 0) {
       return new Response(JSON.stringify({ message: 'No bot config found' }), {
@@ -194,7 +462,7 @@ serve(async (req) => {
     }
     const config = configs[0];
 
-    // Handle manual actions from request body
+    // Handle manual actions
     let action = null;
     if (req.method === 'POST') {
       const body = await req.json();
@@ -208,11 +476,9 @@ serve(async (req) => {
       }
 
       if (action === 'reset') {
-        // Close all open positions at current price
         const price = await fetchCurrentPrice(config.symbol);
         const { data: openPositions } = await supabase.from('bot_positions')
           .select('*').eq('bot_config_id', config.id).eq('status', 'open');
-        
         for (const pos of openPositions || []) {
           const pnl = pos.side === 'long'
             ? (price - pos.entry_price) * pos.quantity
@@ -222,11 +488,9 @@ serve(async (req) => {
             closed_at: new Date().toISOString(), exit_reason: 'Bot reset',
           }).eq('id', pos.id);
         }
-
         await supabase.from('bot_config').update({
           is_active: false, current_balance: config.initial_balance,
         }).eq('id', config.id);
-
         return new Response(JSON.stringify({ message: 'Bot reset' }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -234,12 +498,9 @@ serve(async (req) => {
 
       if (action === 'reset_balance') {
         const newBalance = body.new_balance || config.initial_balance;
-        // Close all open positions
         await supabase.from('bot_positions').delete().eq('bot_config_id', config.id).eq('status', 'open');
-        // Clear trade history and logs
         await supabase.from('bot_trades').delete().eq('bot_config_id', config.id);
         await supabase.from('bot_logs').delete().eq('bot_config_id', config.id);
-        // Reset balances
         await supabase.from('bot_config').update({
           is_active: false, current_balance: newBalance, initial_balance: newBalance,
         }).eq('id', config.id);
@@ -248,6 +509,7 @@ serve(async (req) => {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
+
       if (action === 'update_config') {
         const { leverage, position_size_pct, stop_loss_pct, take_profit_pct, interval } = body;
         await supabase.from('bot_config').update({
@@ -263,7 +525,7 @@ serve(async (req) => {
       }
     }
 
-    // If not active and no special action, just return status
+    // If not active and no special action, return status
     if (!config.is_active && action !== 'run') {
       const { data: positions } = await supabase.from('bot_positions')
         .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
@@ -271,7 +533,6 @@ serve(async (req) => {
         .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(50);
       const { data: logs } = await supabase.from('bot_logs')
         .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(30);
-      
       return new Response(JSON.stringify({ config, positions, trades, logs, executed: false }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -283,10 +544,10 @@ serve(async (req) => {
     const highs = klines.map(k => k.high);
     const lows = klines.map(k => k.low);
     const currentPrice = closes[closes.length - 1];
-    
-    const analysis = analyzeMarket(closes, highs, lows);
 
-    // Check open positions — smart management with trailing SL & dynamic exits
+    const analysis = analyzeMarket(klines);
+
+    // Check open positions — smart management
     const { data: openPositions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).eq('status', 'open');
 
@@ -299,15 +560,14 @@ serve(async (req) => {
       const margin = Number(pos.margin_used);
       const currentSL = Number(pos.stop_loss);
       const currentTP = Number(pos.take_profit);
-      
+
       const pnl = pos.side === 'long'
         ? (currentPrice - entryPrice) * qty
         : (entryPrice - currentPrice) * qty;
       const pnlPct = (pnl / margin) * 100;
 
-      // --- 1. Liquidation check ---
-      const liqThreshold = -90;
-      if (pnlPct <= liqThreshold) {
+      // 1. Liquidation
+      if (pnlPct <= -90) {
         balance -= margin;
         await supabase.from('bot_positions').update({
           status: 'liquidated', exit_price: currentPrice, pnl: -margin, pnl_pct: -100,
@@ -318,11 +578,11 @@ serve(async (req) => {
           price: currentPrice, quantity: qty, pnl: -margin, balance_after: balance,
           reason: `Liquidated at $${currentPrice.toFixed(2)}`,
         });
-        await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} zlikwidowana! PnL: -$${margin.toFixed(2)}`);
+        await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} | PnL: -$${margin.toFixed(2)}`);
         continue;
       }
 
-      // --- 2. Stop Loss hit ---
+      // 2. Stop Loss
       if (currentSL && (
         (pos.side === 'long' && currentPrice <= currentSL) ||
         (pos.side === 'short' && currentPrice >= currentSL)
@@ -337,11 +597,11 @@ serve(async (req) => {
           price: currentPrice, quantity: qty, pnl, balance_after: balance,
           reason: `Stop Loss hit at $${currentPrice.toFixed(2)}`,
         });
-        await logBot(supabase, config.id, 'trade', `🛑 STOP LOSS: ${pos.side} zamknięta. PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+        await logBot(supabase, config.id, 'trade', `🛑 STOP LOSS: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
         continue;
       }
 
-      // --- 3. Take Profit hit ---
+      // 3. Take Profit
       if (currentTP && (
         (pos.side === 'long' && currentPrice >= currentTP) ||
         (pos.side === 'short' && currentPrice <= currentTP)
@@ -354,137 +614,93 @@ serve(async (req) => {
         await supabase.from('bot_trades').insert({
           bot_config_id: config.id, position_id: pos.id, action: 'take_profit',
           price: currentPrice, quantity: qty, pnl, balance_after: balance,
-          reason: `Take Profit hit at $${currentPrice.toFixed(2)}`,
+          reason: `Take Profit at $${currentPrice.toFixed(2)}`,
         });
-        await logBot(supabase, config.id, 'trade', `🎯 TAKE PROFIT: ${pos.side} zamknięta. PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+        await logBot(supabase, config.id, 'trade', `🎯 TAKE PROFIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
         continue;
       }
 
-      // --- 4. TRAILING STOP LOSS — protect profits dynamically ---
-      // Move SL progressively as price moves in our favor
+      // 4. Trailing Stop Loss
       const slDistance = Math.abs(entryPrice - currentSL);
       let newSL = currentSL;
-
       if (pos.side === 'long') {
-        // When price moves up, trail SL behind it
-        if (pnlPct >= 50) {
-          // At 50%+ profit: tight trail — SL at current price minus 30% of original SL distance
-          newSL = Math.max(currentSL, currentPrice - slDistance * 0.3);
-        } else if (pnlPct >= 25) {
-          // At 25%+ profit: medium trail — SL at current price minus 50% of original SL distance
-          newSL = Math.max(currentSL, currentPrice - slDistance * 0.5);
-        } else if (pnlPct >= 10) {
-          // At 10%+ profit: move SL to breakeven + small buffer
-          newSL = Math.max(currentSL, entryPrice + slDistance * 0.05);
-        }
+        if (pnlPct >= 50) newSL = Math.max(currentSL, currentPrice - slDistance * 0.3);
+        else if (pnlPct >= 25) newSL = Math.max(currentSL, currentPrice - slDistance * 0.5);
+        else if (pnlPct >= 10) newSL = Math.max(currentSL, entryPrice + slDistance * 0.05);
       } else {
-        // SHORT: mirror logic — SL moves down as price drops
-        if (pnlPct >= 50) {
-          newSL = Math.min(currentSL, currentPrice + slDistance * 0.3);
-        } else if (pnlPct >= 25) {
-          newSL = Math.min(currentSL, currentPrice + slDistance * 0.5);
-        } else if (pnlPct >= 10) {
-          newSL = Math.min(currentSL, entryPrice - slDistance * 0.05);
-        }
+        if (pnlPct >= 50) newSL = Math.min(currentSL, currentPrice + slDistance * 0.3);
+        else if (pnlPct >= 25) newSL = Math.min(currentSL, currentPrice + slDistance * 0.5);
+        else if (pnlPct >= 10) newSL = Math.min(currentSL, entryPrice - slDistance * 0.05);
       }
-
       if (newSL !== currentSL) {
         await supabase.from('bot_positions').update({ stop_loss: newSL }).eq('id', pos.id);
         await logBot(supabase, config.id, 'info',
-          `🔒 TRAILING SL: ${pos.side} SL przesunięty $${currentSL.toFixed(0)} → $${newSL.toFixed(0)} (profit: ${pnlPct.toFixed(1)}%)`);
+          `🔒 TRAILING SL: ${pos.side} $${currentSL.toFixed(0)} → $${newSL.toFixed(0)} (profit: ${pnlPct.toFixed(1)}%)`);
       }
 
-      // --- 5. EARLY EXIT on weakening momentum (don't wait for TP) ---
-      // If we're in profit but indicators are weakening, take profit early
+      // 5. Smart Early Exit
       if (pnlPct >= 15) {
-        let shouldExitEarly = false;
-        let exitReason = '';
-
-        // RSI divergence: overbought in long, oversold in short
-        if (pos.side === 'long' && analysis.rsi > 75) {
-          shouldExitEarly = true;
-          exitReason = `RSI overbought (${analysis.rsi.toFixed(1)}) — zabierz zysk`;
-        } else if (pos.side === 'short' && analysis.rsi < 25) {
-          shouldExitEarly = true;
-          exitReason = `RSI oversold (${analysis.rsi.toFixed(1)}) — zabierz zysk`;
-        }
-
-        // MACD losing momentum while in profit
+        let shouldExitEarly = false, exitReason = '';
+        if (pos.side === 'long' && analysis.rsi > 75) { shouldExitEarly = true; exitReason = `RSI overbought (${analysis.rsi.toFixed(1)})`; }
+        else if (pos.side === 'short' && analysis.rsi < 25) { shouldExitEarly = true; exitReason = `RSI oversold (${analysis.rsi.toFixed(1)})`; }
         if (!shouldExitEarly && pnlPct >= 20) {
-          if (pos.side === 'long' && analysis.macdHist < 0 && analysis.score < 0) {
-            shouldExitEarly = true;
-            exitReason = `MACD bearish + słabnący trend — zabierz zysk`;
-          } else if (pos.side === 'short' && analysis.macdHist > 0 && analysis.score > 0) {
-            shouldExitEarly = true;
-            exitReason = `MACD bullish + zmiana trendu — zabierz zysk`;
-          }
+          if (pos.side === 'long' && analysis.macdHist < 0 && analysis.score < 0) { shouldExitEarly = true; exitReason = 'MACD bearish momentum'; }
+          else if (pos.side === 'short' && analysis.macdHist > 0 && analysis.score > 0) { shouldExitEarly = true; exitReason = 'MACD bullish momentum'; }
         }
-
-        // Bollinger band extreme — price at outer band, likely to revert
-        if (!shouldExitEarly && pnlPct >= 15) {
-          if (pos.side === 'long' && analysis.bbPosition > 0.95) {
-            shouldExitEarly = true;
-            exitReason = `Cena przy górnym Bollinger Band — zabierz zysk`;
-          } else if (pos.side === 'short' && analysis.bbPosition < 0.05) {
-            shouldExitEarly = true;
-            exitReason = `Cena przy dolnym Bollinger Band — zabierz zysk`;
-          }
-        }
-
         if (shouldExitEarly) {
           balance += margin + pnl;
           await supabase.from('bot_positions').update({
             status: 'closed', exit_price: currentPrice, pnl, pnl_pct: pnlPct,
             closed_at: new Date().toISOString(), exit_reason: exitReason,
           }).eq('id', pos.id);
-          const closeAction = pos.side === 'long' ? 'close_long' : 'close_short';
           await supabase.from('bot_trades').insert({
-            bot_config_id: config.id, position_id: pos.id, action: closeAction,
+            bot_config_id: config.id, position_id: pos.id,
+            action: pos.side === 'long' ? 'close_long' : 'close_short',
             price: currentPrice, quantity: qty, pnl, balance_after: balance,
-            reason: `Early exit: ${exitReason} | PnL: ${pnlPct.toFixed(1)}%`,
+            reason: `Smart exit: ${exitReason} | PnL: ${pnlPct.toFixed(1)}%`,
             indicators_snapshot: analysis,
           });
-          await logBot(supabase, config.id, 'trade', `🧠 SMART EXIT: ${pos.side} zamknięta wcześniej. ${exitReason} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+          await logBot(supabase, config.id, 'trade', `🧠 SMART EXIT: ${pos.side} | ${exitReason} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
           continue;
         }
       }
 
-      // --- 6. Signal reversal exit (stronger threshold than before) ---
-      if ((pos.side === 'long' && analysis.bias === 'bearish' && analysis.score < -0.5) ||
-          (pos.side === 'short' && analysis.bias === 'bullish' && analysis.score > 0.5)) {
+      // 6. Signal reversal exit
+      if ((pos.side === 'long' && analysis.bias === 'bearish') ||
+          (pos.side === 'short' && analysis.bias === 'bullish')) {
         balance += margin + pnl;
         await supabase.from('bot_positions').update({
           status: 'closed', exit_price: currentPrice, pnl, pnl_pct: pnlPct,
           closed_at: new Date().toISOString(), exit_reason: 'Signal reversal',
         }).eq('id', pos.id);
-        const closeAction = pos.side === 'long' ? 'close_long' : 'close_short';
         await supabase.from('bot_trades').insert({
-          bot_config_id: config.id, position_id: pos.id, action: closeAction,
+          bot_config_id: config.id, position_id: pos.id,
+          action: pos.side === 'long' ? 'close_long' : 'close_short',
           price: currentPrice, quantity: qty, pnl, balance_after: balance,
-          reason: `Signal reversal (${analysis.bias}, score: ${analysis.score.toFixed(2)})`,
+          reason: `Signal reversal → ${analysis.bias}`,
           indicators_snapshot: analysis,
         });
-        await logBot(supabase, config.id, 'trade', `🔄 ZAMKNIĘCIE: ${pos.side} → ${analysis.bias}. PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+        await logBot(supabase, config.id, 'trade', `🔄 REVERSAL EXIT: ${pos.side} → ${analysis.bias} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
       }
     }
 
-    // Open new position if no open positions and strong signal
+    // ===== OPEN NEW POSITION =====
     const { data: remainingOpen } = await supabase.from('bot_positions')
       .select('id').eq('bot_config_id', config.id).eq('status', 'open');
 
-    if ((!remainingOpen || remainingOpen.length === 0) && Math.abs(analysis.score) > 0.3) {
+    if ((!remainingOpen || remainingOpen.length === 0) && analysis.entryAllowed) {
       const positionSizePct = Number(config.position_size_pct) / 100;
       const margin = balance * positionSizePct;
-      
+
       if (margin > 10 && balance > margin) {
         const leverage = Number(config.leverage);
         const notional = margin * leverage;
         const quantity = notional / currentPrice;
         const side = analysis.bias === 'bullish' ? 'long' : 'short';
-        
+
         const slPct = Number(config.stop_loss_pct) / 100;
         const tpPct = Number(config.take_profit_pct) / 100;
-        
+
         const stopLoss = side === 'long'
           ? currentPrice * (1 - slPct / leverage)
           : currentPrice * (1 + slPct / leverage);
@@ -492,35 +708,56 @@ serve(async (req) => {
           ? currentPrice * (1 + tpPct / leverage)
           : currentPrice * (1 - tpPct / leverage);
 
-        balance -= margin;
+        // ===== STEP 4: RISK-REWARD VALIDATION =====
+        const rr = validateRiskReward(side, currentPrice, stopLoss, takeProfit);
+        reasoning_log: analysis.reasoning;
 
-        const { data: newPos } = await supabase.from('bot_positions').insert({
-          bot_config_id: config.id, side, entry_price: currentPrice, quantity,
-          leverage, margin_used: margin, stop_loss: stopLoss, take_profit: takeProfit,
-          entry_reason: `${analysis.bias} signal (score: ${analysis.score.toFixed(2)}, RSI: ${analysis.rsi.toFixed(1)})`,
-        }).select().single();
+        if (!rr.valid) {
+          await logBot(supabase, config.id, 'info',
+            `❌ TRADE DISCARDED: ${side.toUpperCase()} @ $${currentPrice.toFixed(2)} | ${rr.reason} | ${analysis.reasoning}`);
+        } else {
+          balance -= margin;
 
-        const openAction = side === 'long' ? 'open_long' : 'open_short';
-        await supabase.from('bot_trades').insert({
-          bot_config_id: config.id, position_id: newPos?.id, action: openAction,
-          price: currentPrice, quantity, balance_after: balance,
-          reason: `${side.toUpperCase()} @ $${currentPrice.toFixed(2)} | Margin: $${margin.toFixed(2)} | Leverage: ${leverage}x`,
-          indicators_snapshot: analysis,
-        });
+          const entryReason = [
+            `${side.toUpperCase()} — Triple Confirmation`,
+            rr.reason,
+            `Keys: ${side === 'long' ? analysis.bullKeys : analysis.bearKeys}/5`,
+            analysis.reasoning,
+          ].join(' | ');
 
-        await logBot(supabase, config.id, 'trade',
-          `📈 ${side.toUpperCase()} OPEN @ $${currentPrice.toFixed(2)} | Qty: ${quantity.toFixed(6)} BTC | SL: $${stopLoss.toFixed(2)} | TP: $${takeProfit.toFixed(2)}`);
+          const { data: newPos } = await supabase.from('bot_positions').insert({
+            bot_config_id: config.id, side, entry_price: currentPrice, quantity,
+            leverage, margin_used: margin, stop_loss: stopLoss, take_profit: takeProfit,
+            entry_reason: entryReason.slice(0, 500),
+          }).select().single();
+
+          await supabase.from('bot_trades').insert({
+            bot_config_id: config.id, position_id: newPos?.id,
+            action: side === 'long' ? 'open_long' : 'open_short',
+            price: currentPrice, quantity, balance_after: balance,
+            reason: `${side.toUpperCase()} @ $${currentPrice.toFixed(2)} | Margin: $${margin.toFixed(2)} | ${leverage}x | ${rr.reason}`,
+            indicators_snapshot: analysis,
+          });
+
+          await logBot(supabase, config.id, 'trade',
+            `📈 ${side.toUpperCase()} OPEN @ $${currentPrice.toFixed(2)} | Qty: ${quantity.toFixed(6)} BTC | SL: $${stopLoss.toFixed(2)} | TP: $${takeProfit.toFixed(2)} | ${rr.reason}`);
+          await logBot(supabase, config.id, 'info', `🧠 Reasoning: ${analysis.reasoning}`);
+        }
       }
+    } else if (!analysis.entryAllowed && (!remainingOpen || remainingOpen.length === 0)) {
+      // Log why we're not trading
+      await logBot(supabase, config.id, 'info',
+        `⏸ NO TRADE: ${analysis.skipReason || 'Conditions not met'}`);
     }
 
     // Update balance
     await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
-    
-    await logBot(supabase, config.id, 'info',
-      `Tick: $${currentPrice.toFixed(2)} | Bias: ${analysis.bias} (${analysis.score.toFixed(2)}) | Bull: ${analysis.bullish} Bear: ${analysis.bearish} | RSI: ${analysis.rsi.toFixed(1)} | Balance: $${balance.toFixed(2)}`,
-      { details: analysis.details });
 
-    // Return current state
+    await logBot(supabase, config.id, 'info',
+      `Tick: $${currentPrice.toFixed(2)} | Bias: ${analysis.bias} | BullKeys: ${analysis.bullKeys}/5 BearKeys: ${analysis.bearKeys}/5 | RSI: ${analysis.rsi.toFixed(1)} | Bal: $${balance.toFixed(2)}`,
+      { reasoning: analysis.reasoning });
+
+    // Return state
     const { data: positions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
     const { data: trades } = await supabase.from('bot_trades')
