@@ -80,61 +80,98 @@ function analyzeMarket(closes: number[], highs: number[], lows: number[]) {
   const last = closes.length - 1;
   const price = closes[last];
   
+  const ema20 = ema(closes, 20);
   const ema50 = ema(closes, 50);
   const ema200 = ema(closes, 200);
   const rsiVals = rsi(closes);
   const macdData = macd(closes);
   const bb = bollingerBands(closes);
   
-  let bullish = 0, bearish = 0, total = 0;
-  
-  // EMA cross
-  total++;
-  if (ema50[last] > ema200[last]) bullish++; else bearish++;
-  
-  // RSI
-  total++;
   const lastRsi = rsiVals[last];
-  if (lastRsi < 30) bullish++;
-  else if (lastRsi > 70) bearish++;
-  
-  // MACD
-  total++;
-  if (macdData.line[last] > macdData.signal[last]) bullish++;
-  else bearish++;
-  
-  // MACD crossover
-  total++;
+  const bbPos = (price - bb.lower[last]) / (bb.upper[last] - bb.lower[last]);
   const prevMacdAbove = macdData.line[last-1] > macdData.signal[last-1];
   const currMacdAbove = macdData.line[last] > macdData.signal[last];
-  if (!prevMacdAbove && currMacdAbove) bullish++;
-  else if (prevMacdAbove && !currMacdAbove) bearish++;
   
-  // Bollinger position
-  total++;
-  const bbPos = (price - bb.lower[last]) / (bb.upper[last] - bb.lower[last]);
-  if (bbPos < 0.2) bullish++;
-  else if (bbPos > 0.8) bearish++;
+  // Weighted scoring: each indicator contributes a weight
+  let bullScore = 0, bearScore = 0;
+  const details: string[] = [];
   
-  // Price vs EMA50
-  total++;
-  if (price > ema50[last]) bullish++; else bearish++;
+  // 1. EMA trend structure (weight: 1)
+  if (ema50[last] > ema200[last]) { bullScore += 1; details.push('EMA50>200 ↑'); }
+  else { bearScore += 1; details.push('EMA50<200 ↓'); }
   
-  const score = total > 0 ? (bullish - bearish) / total : 0; // -1 to 1
-  const bias = score > 0.3 ? 'bullish' : score < -0.3 ? 'bearish' : 'neutral';
+  // 2. Short-term momentum: price vs EMA20 (weight: 1)
+  if (price > ema20[last]) { bullScore += 1; details.push('Price>EMA20 ↑'); }
+  else { bearScore += 1; details.push('Price<EMA20 ↓'); }
+  
+  // 3. RSI — wider zones with proportional scoring (weight: 1.5)
+  if (lastRsi < 25) { bullScore += 1.5; details.push(`RSI ${lastRsi.toFixed(0)} oversold ↑↑`); }
+  else if (lastRsi < 40) { bullScore += 0.5; details.push(`RSI ${lastRsi.toFixed(0)} low ↑`); }
+  else if (lastRsi > 75) { bearScore += 1.5; details.push(`RSI ${lastRsi.toFixed(0)} overbought ↓↓`); }
+  else if (lastRsi > 60) { bearScore += 0.5; details.push(`RSI ${lastRsi.toFixed(0)} high ↓`); }
+  else { details.push(`RSI ${lastRsi.toFixed(0)} neutral`); }
+  
+  // 4. MACD line vs signal (weight: 1)
+  if (currMacdAbove) { bullScore += 1; details.push('MACD>Signal ↑'); }
+  else { bearScore += 1; details.push('MACD<Signal ↓'); }
+  
+  // 5. MACD crossover — fresh cross is strong signal (weight: 1.5)
+  if (!prevMacdAbove && currMacdAbove) { bullScore += 1.5; details.push('MACD bullish cross ↑↑'); }
+  else if (prevMacdAbove && !currMacdAbove) { bearScore += 1.5; details.push('MACD bearish cross ↓↓'); }
+  
+  // 6. MACD histogram momentum (weight: 0.5)
+  if (macdData.hist[last] > 0 && macdData.hist[last] > macdData.hist[last-1]) { bullScore += 0.5; details.push('MACD hist growing ↑'); }
+  else if (macdData.hist[last] < 0 && macdData.hist[last] < macdData.hist[last-1]) { bearScore += 0.5; details.push('MACD hist falling ↓'); }
+  
+  // 7. Bollinger Band position (weight: 1)
+  if (bbPos < 0.15) { bullScore += 1; details.push('BB oversold ↑'); }
+  else if (bbPos < 0.35) { bullScore += 0.3; details.push('BB low ↑'); }
+  else if (bbPos > 0.85) { bearScore += 1; details.push('BB overbought ↓'); }
+  else if (bbPos > 0.65) { bearScore += 0.3; details.push('BB high ↓'); }
+  
+  // 8. EMA20 vs EMA50 — short-term trend (weight: 1)
+  if (ema20[last] > ema50[last]) { bullScore += 1; details.push('EMA20>50 ↑'); }
+  else { bearScore += 1; details.push('EMA20<50 ↓'); }
+
+  const maxPossible = 9; // max weight sum per side
+  const score = (bullScore - bearScore) / maxPossible; // normalized -1 to 1
+  
+  // RSI guardrails: prevent shorting oversold / longing overbought
+  let bias: string;
+  if (lastRsi < 30 && score < 0) {
+    bias = 'neutral'; // RSI oversold — don't short!
+    details.push('⚠ RSI guardrail: block short');
+  } else if (lastRsi > 70 && score > 0) {
+    bias = 'neutral'; // RSI overbought — don't long!
+    details.push('⚠ RSI guardrail: block long');
+  } else {
+    // Require stronger conviction: threshold 0.15 (was 0.3 on old scale)
+    bias = score > 0.15 ? 'bullish' : score < -0.15 ? 'bearish' : 'neutral';
+  }
+  
+  // Require minimum agreement: at least 3 indicators on the winning side
+  const minAgreement = 3;
+  if (bias === 'bullish' && bullScore < minAgreement) {
+    bias = 'neutral';
+    details.push('⚠ Not enough bullish agreement');
+  } else if (bias === 'bearish' && bearScore < minAgreement) {
+    bias = 'neutral';
+    details.push('⚠ Not enough bearish agreement');
+  }
   
   return {
     bias,
     score,
-    bullish,
-    bearish,
-    total,
+    bullish: bullScore,
+    bearish: bearScore,
+    total: bullScore + bearScore,
     rsi: lastRsi,
     macdHist: macdData.hist[last],
     ema50: ema50[last],
     ema200: ema200[last],
     bbPosition: bbPos,
     price,
+    details: details.join(' | '),
   };
 }
 
@@ -480,7 +517,8 @@ serve(async (req) => {
     await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
     
     await logBot(supabase, config.id, 'info',
-      `Tick: $${currentPrice.toFixed(2)} | Bias: ${analysis.bias} (${analysis.score.toFixed(2)}) | RSI: ${analysis.rsi.toFixed(1)} | Balance: $${balance.toFixed(2)}`);
+      `Tick: $${currentPrice.toFixed(2)} | Bias: ${analysis.bias} (${analysis.score.toFixed(2)}) | Bull: ${analysis.bullish} Bear: ${analysis.bearish} | RSI: ${analysis.rsi.toFixed(1)} | Balance: $${balance.toFixed(2)}`,
+      { details: analysis.details });
 
     // Return current state
     const { data: positions } = await supabase.from('bot_positions')
