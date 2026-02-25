@@ -281,6 +281,8 @@ function analyzeMarket(klines: Kline[]) {
     return {
       bias: 'neutral' as const,
       score: 0,
+      bullKeys: 0,
+      bearKeys: 0,
       rsi: lastRsi,
       macdHist: macdData.hist[last],
       ema50: ema50[last],
@@ -620,22 +622,41 @@ serve(async (req) => {
         continue;
       }
 
-      // 4. Trailing Stop Loss
-      const slDistance = Math.abs(entryPrice - currentSL);
+      // 4. ATR-based Trailing Stop Loss
+      // Stage 1: At 1% profit → move SL to break-even
+      // Stage 2: Every further 0.5% gain → trail SL behind price by 1.5x ATR
+      const currentAtr = analysis.atr || 0;
       let newSL = currentSL;
-      if (pos.side === 'long') {
-        if (pnlPct >= 50) newSL = Math.max(currentSL, currentPrice - slDistance * 0.3);
-        else if (pnlPct >= 25) newSL = Math.max(currentSL, currentPrice - slDistance * 0.5);
-        else if (pnlPct >= 10) newSL = Math.max(currentSL, entryPrice + slDistance * 0.05);
-      } else {
-        if (pnlPct >= 50) newSL = Math.min(currentSL, currentPrice + slDistance * 0.3);
-        else if (pnlPct >= 25) newSL = Math.min(currentSL, currentPrice + slDistance * 0.5);
-        else if (pnlPct >= 10) newSL = Math.min(currentSL, entryPrice - slDistance * 0.05);
+      const profitPctRaw = pnlPct; // already leverage-adjusted
+
+      if (profitPctRaw >= 1) {
+        if (pos.side === 'long') {
+          // Break-even floor
+          const breakEvenSL = entryPrice;
+          // ATR trail: every 0.5% above 1%, tighten SL
+          const trailingSteps = Math.floor((profitPctRaw - 1) / 0.5);
+          const atrTrailSL = trailingSteps > 0
+            ? currentPrice - (1.5 * currentAtr)
+            : breakEvenSL;
+          // SL = max of (current SL, break-even, ATR trail) — never move SL down
+          newSL = Math.max(currentSL, breakEvenSL, atrTrailSL);
+        } else {
+          // Short: break-even floor
+          const breakEvenSL = entryPrice;
+          const trailingSteps = Math.floor((profitPctRaw - 1) / 0.5);
+          const atrTrailSL = trailingSteps > 0
+            ? currentPrice + (1.5 * currentAtr)
+            : breakEvenSL;
+          // SL = min of (current SL, break-even, ATR trail) — never move SL up (for short)
+          newSL = Math.min(currentSL, breakEvenSL, atrTrailSL);
+        }
       }
+
       if (newSL !== currentSL) {
         await supabase.from('bot_positions').update({ stop_loss: newSL }).eq('id', pos.id);
+        const trailType = Math.abs(newSL - entryPrice) < 1 ? 'BREAK-EVEN' : 'ATR TRAIL';
         await logBot(supabase, config.id, 'info',
-          `🔒 TRAILING SL: ${pos.side} $${currentSL.toFixed(0)} → $${newSL.toFixed(0)} (profit: ${pnlPct.toFixed(1)}%)`);
+          `🔒 ${trailType}: ${pos.side} SL $${currentSL.toFixed(0)} → $${newSL.toFixed(0)} (profit: ${pnlPct.toFixed(1)}% | ATR: ${currentAtr.toFixed(0)})`);
       }
 
       // 5. Smart Early Exit
