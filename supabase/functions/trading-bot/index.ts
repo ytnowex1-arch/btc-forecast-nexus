@@ -20,13 +20,7 @@ async function fetchKlines(symbol: string, interval: string, limit = 500): Promi
   }));
 }
 
-async function fetchCurrentPrice(symbol: string): Promise<number> {
-  const res = await fetch(`${BINANCE_URL}/ticker/price?symbol=${symbol}`);
-  const data = await res.json();
-  return parseFloat(data.price);
-}
-
-// ========== INDICATORS ==========
+// ========== WSKAŹNIKI TECHNICZNE ==========
 function ema(data: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const result = [data[0]];
@@ -89,173 +83,166 @@ function atr(highs: number[], lows: number[], closes: number[], period = 14): nu
   return ema(tr, period);
 }
 
-// ========== CONTEXT FILTER: Support/Resistance ==========
-function findSupportResistance(highs: number[], lows: number[], closes: number[], lookback = 50) {
-  const last = closes.length - 1;
-  const price = closes[last];
-  const recentLows = lows.slice(Math.max(0, last - lookback), last + 1);
-  const recentHighs = highs.slice(Math.max(0, last - lookback), last + 1);
-
-  // Find swing lows (support zones)
-  const supports: number[] = [];
-  for (let i = 2; i < recentLows.length - 2; i++) {
-    if (recentLows[i] < recentLows[i-1] && recentLows[i] < recentLows[i-2] &&
-        recentLows[i] < recentLows[i+1] && recentLows[i] < recentLows[i+2]) {
-      supports.push(recentLows[i]);
-    }
-  }
-
-  // Find swing highs (resistance zones)
-  const resistances: number[] = [];
-  for (let i = 2; i < recentHighs.length - 2; i++) {
-    if (recentHighs[i] > recentHighs[i-1] && recentHighs[i] > recentHighs[i-2] &&
-        recentHighs[i] > recentHighs[i+1] && recentHighs[i] > recentHighs[i+2]) {
-      resistances.push(recentHighs[i]);
-    }
-  }
-
-  // Double bottom detection: two similar lows with a bounce between
-  let doubleBottom = false;
-  const tolerance = price * 0.005; // 0.5% tolerance
-  for (let i = 0; i < supports.length - 1; i++) {
-    if (Math.abs(supports[i] - supports[i+1]) < tolerance && price > supports[i]) {
-      doubleBottom = true;
-      break;
-    }
-  }
-
-  // Failed breakout detection: price approached a high but got rejected
-  let failedBreakout = false;
-  if (resistances.length > 0) {
-    const nearestResistance = resistances.reduce((a, b) => 
-      Math.abs(a - price) < Math.abs(b - price) ? a : b);
-    // Price reached within 0.3% of resistance and pulled back
-    const recentHigh = Math.max(...highs.slice(Math.max(0, last - 5), last + 1));
-    if (recentHigh >= nearestResistance * 0.997 && price < nearestResistance) {
-      failedBreakout = true;
-    }
-  }
-
-  // Near support zone check
-  const nearSupport = supports.some(s => price >= s * 0.995 && price <= s * 1.01);
-  // Near resistance zone check
-  const nearResistance = resistances.some(r => price >= r * 0.99 && price <= r * 1.005);
-
-  return { supports, resistances, doubleBottom, failedBreakout, nearSupport, nearResistance };
-}
-
-// ========== THREE-KEY ENTRY CONDITIONS ==========
-
-// Condition A: RSI Divergence
-function detectRSIDivergence(closes: number[], rsiVals: number[], lookback = 20): { bullish: boolean; bearish: boolean } {
-  const last = closes.length - 1;
-  const start = Math.max(0, last - lookback);
-  
-  let bullishDiv = false, bearishDiv = false;
-
-  // Find recent swing lows in price and check RSI
-  for (let i = start + 2; i < last - 1; i++) {
-    // Bullish: price makes lower low, RSI makes higher low
-    if (closes[last] < closes[i] && rsiVals[last] > rsiVals[i] && rsiVals[i] < 40) {
-      bullishDiv = true;
-    }
-    // Bearish: price makes higher high, RSI makes lower high
-    if (closes[last] > closes[i] && rsiVals[last] < rsiVals[i] && rsiVals[i] > 60) {
-      bearishDiv = true;
-    }
-  }
-  return { bullish: bullishDiv, bearish: bearishDiv };
-}
-
-// Condition B: Candlestick Patterns
-function detectCandlestickPatterns(klines: Kline[]): { bullish: boolean; bearish: boolean; pattern: string } {
-  const last = klines.length - 1;
-  const c = klines[last], p = klines[last - 1], pp = klines[last - 2];
-  const bodyC = Math.abs(c.close - c.open);
-  const rangeC = c.high - c.low;
-  const bodyP = Math.abs(p.close - p.open);
-  const rangeP = p.high - p.low;
-
-  let bullish = false, bearish = false, pattern = '';
-
-  // Pin Bar (Hammer / Shooting Star)
-  if (rangeC > 0) {
-    const lowerWick = Math.min(c.open, c.close) - c.low;
-    const upperWick = c.high - Math.max(c.open, c.close);
-    // Bullish pin bar (hammer): long lower wick, small body at top
-    if (lowerWick > bodyC * 2 && upperWick < bodyC * 0.5) {
-      bullish = true; pattern = 'Hammer';
-    }
-    // Bearish pin bar (shooting star): long upper wick, small body at bottom
-    if (upperWick > bodyC * 2 && lowerWick < bodyC * 0.5) {
-      bearish = true; pattern = 'Shooting Star';
-    }
-  }
-
-  // Engulfing
-  if (!bullish && !bearish && bodyP > 0) {
-    // Bullish engulfing: prev was red, current is green and engulfs
-    if (p.close < p.open && c.close > c.open && c.close > p.open && c.open < p.close) {
-      bullish = true; pattern = 'Bullish Engulfing';
-    }
-    // Bearish engulfing: prev was green, current is red and engulfs
-    if (p.close > p.open && c.close < c.open && c.close < p.open && c.open > p.close) {
-      bearish = true; pattern = 'Bearish Engulfing';
-    }
-  }
-
-  // Morning Star / Evening Star (3-candle)
-  if (!bullish && !bearish) {
-    const bodyPP = Math.abs(pp.close - pp.open);
-    // Morning Star: big red, small body (doji-ish), big green
-    if (pp.close < pp.open && bodyP < bodyPP * 0.3 && c.close > c.open && bodyC > bodyPP * 0.5) {
-      bullish = true; pattern = 'Morning Star';
-    }
-    // Evening Star: big green, small body, big red
-    if (pp.close > pp.open && bodyP < bodyPP * 0.3 && c.close < c.open && bodyC > bodyPP * 0.5) {
-      bearish = true; pattern = 'Evening Star';
-    }
-  }
-
-  return { bullish, bearish, pattern };
-}
-
-// Condition C: Volume Spike
-function detectVolumeSpike(volumes: number[], lookback = 20): boolean {
-  const last = volumes.length - 1;
-  const avgVol = volumes.slice(Math.max(0, last - lookback), last).reduce((a, b) => a + b, 0) / lookback;
-  return volumes[last] > avgVol * 1.5;
-}
-
-// Condition E: Price outside 2nd StdDev of BB
-function priceOutsideBB2(price: number, bbUpper: number, bbLower: number): { outside: boolean; side: 'above' | 'below' | 'inside' } {
-  if (price > bbUpper) return { outside: true, side: 'above' };
-  if (price < bbLower) return { outside: true, side: 'below' };
-  return { outside: false, side: 'inside' };
-}
-
-// ========== NO-TRADE ZONE CHECKS ==========
-function isChopZone(price: number, ema50Val: number, ema200Val: number): boolean {
-  const midpoint = (ema50Val + ema200Val) / 2;
-  const range = Math.abs(ema50Val - ema200Val);
-  // Price within 20% of the midpoint of the EMA gap
-  return range > 0 && Math.abs(price - midpoint) < range * 0.2;
-}
-
-function isLowVolumeEnvironment(volumes: number[], lookback = 50): boolean {
-  const last = volumes.length - 1;
-  const avgVol = volumes.slice(Math.max(0, last - lookback), last).reduce((a, b) => a + b, 0) / lookback;
-  // Volume less than 40% of average = dead market
-  return volumes[last] < avgVol * 0.4;
-}
-
-// ========== MAIN ANALYSIS ==========
+// ========== ANALIZA RYNKU (STRATEGIA SNIPER) ==========
 function analyzeMarket(klines: Kline[]) {
   const closes = klines.map(k => k.close);
   const highs = klines.map(k => k.high);
   const lows = klines.map(k => k.low);
   const volumes = klines.map(k => k.volume);
   const last = closes.length - 1;
+  const price = closes[last];
+
+  const rsiVals = rsi(closes);
+  const macdData = macd(closes);
+  const bb = bollingerBands(closes);
+  const ema20 = ema(closes, 20);
+  const ema50 = ema(closes, 50);
+  const ema200 = ema(closes, 200);
+  const atrVals = atr(highs, lows, closes);
+
+  const lastRsi = rsiVals[last];
+  const lastAtr = atrVals[last];
+
+  // 1. FILTR WOLUMENU (Poluzowany do 10%)
+  const avgVol = volumes.slice(last - 20, last).reduce((a, b) => a + b, 0) / 20;
+  if (volumes[last] < avgVol * 0.1) {
+    return { bias: 'neutral', skipReason: 'Low volume', rsi: lastRsi, price, bullKeys: 0, bearKeys: 0, reasoning: 'Market too quiet' };
+  }
+
+  // 2. KONTEKST (MOMENTUM + STRUKTURA)
+  let longContext = false, shortContext = false;
+  
+  if (price > ema200[last] && ema50[last] > ema200[last]) longContext = true; // Trend wzrostowy
+  if (price > ema20[last] && macdData.hist[last] > 0) longContext = true; // Silne momentum
+  
+  if (price < ema200[last] && ema50[last] < ema200[last]) shortContext = true; // Trend spadkowy
+  if (price < ema20[last] && macdData.hist[last] < 0) shortContext = true; // Słabe momentum
+
+  // 3. LICZENIE KLUCZY (Zgodnie z UI)
+  let bullKeys = 0, bearKeys = 0;
+  const bullCond: string[] = [], bearCond: string[] = [];
+
+  // RSI
+  if (lastRsi < 35) { bullKeys++; bullCond.push('RSI Oversold'); }
+  if (lastRsi > 65) { bearKeys++; bearCond.push('RSI Overbought'); }
+
+  // MACD
+  if (macdData.hist[last] > 0 && macdData.hist[last] > macdData.hist[last-1]) { bullKeys++; bullCond.push('MACD Rising'); }
+  if (macdData.hist[last] < 0 && macdData.hist[last] < macdData.hist[last-1]) { bearKeys++; bearCond.push('MACD Falling'); }
+
+  // Bollinger
+  if (price < bb.lower[last]) { bullKeys++; bullCond.push('Below BB Lower'); }
+  if (price > bb.upper[last]) { bearKeys++; bearCond.push('Above BB Upper'); }
+
+  // Candlesticks (Hammer/Engulfing)
+  const isGreen = closes[last] > klines[last].open;
+  const body = Math.abs(closes[last] - klines[last].open);
+  const prevBody = Math.abs(closes[last-1] - klines[last-1].open);
+  if (isGreen && body > prevBody) { bullKeys++; bullCond.push('Bullish Engulfing'); }
+  if (!isGreen && body > prevBody) { bearKeys++; bearCond.push('Bearish Engulfing'); }
+
+  // Volume Confirmation
+  if (volumes[last] > avgVol * 1.2) {
+    if (isGreen) { bullKeys++; bullCond.push('Volume Confirm Bull'); }
+    else { bearKeys++; bearCond.push('Volume Confirm Bear'); }
+  }
+
+  const REQUIRED = 3;
+  let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+  let entryAllowed = false;
+
+  if (bullKeys >= REQUIRED && longContext && lastRsi < 80) {
+    bias = 'bullish'; entryAllowed = true;
+  } else if (bearKeys >= REQUIRED && shortContext && lastRsi > 20) {
+    bias = 'bearish'; entryAllowed = true;
+  }
+
+  return {
+    bias, price, rsi: lastRsi, atr: lastAtr, 
+    bullKeys, bearKeys,
+    reasoning: `Bull: ${bullKeys}/${REQUIRED} (${bullCond.join(',')}) | Bear: ${bearKeys}/${REQUIRED} (${bearCond.join(',')})`,
+    entryAllowed
+  };
+}
+
+// ========== SERWER I LOGIKA TRANSAKCJI ==========
+serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
+
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    const { data: configs } = await supabase.from('bot_config').select('*').limit(1);
+    const config = configs[0];
+
+    if (!config.is_active) {
+      return new Response(JSON.stringify({ config, executed: false }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }});
+    }
+
+    const klines = await fetchKlines(config.symbol, config.interval, 200);
+    const analysis = analyzeMarket(klines);
+    const currentPrice = analysis.price;
+    let balance = Number(config.current_balance);
+
+    const { data: openPos } = await supabase.from('bot_positions').select('*').eq('bot_config_id', config.id).eq('status', 'open');
+
+    // 1. Zarządzanie otwartą pozycją
+    for (const pos of openPos || []) {
+      const pnl = pos.side === 'long' ? (currentPrice - pos.entry_price) * pos.quantity : (pos.entry_price - currentPrice) * pos.quantity;
+      const pnlPct = (pnl / pos.margin_used) * 100;
+
+      // Trailing SL
+      if (pnlPct >= 1.5) {
+        const trail = analysis.atr * 1.5;
+        const newSL = pos.side === 'long' ? Math.max(pos.stop_loss, currentPrice - trail) : Math.min(pos.stop_loss, currentPrice + trail);
+        if (newSL !== pos.stop_loss) await supabase.from('bot_positions').update({ stop_loss: newSL }).eq('id', pos.id);
+      }
+
+      // Zamknięcie (SL/TP)
+      if (currentPrice <= pos.stop_loss && pos.side === 'long' || currentPrice >= pos.stop_loss && pos.side === 'short' || pnlPct >= 6) {
+        const finalBal = balance + pos.margin_used + pnl;
+        await supabase.from('bot_positions').update({ status: 'closed', exit_price: currentPrice, pnl, pnl_pct: pnlPct, closed_at: new Date().toISOString() }).eq('id', pos.id);
+        await supabase.from('bot_config').update({ current_balance: finalBal }).eq('id', config.id);
+        balance = finalBal;
+        await logBot(supabase, config.id, 'trade', `Closed ${pos.side} | PnL: $${pnl.toFixed(2)}`);
+      }
+    }
+
+    // 2. Otwarcie nowej pozycji
+    if ((!openPos || openPos.length === 0) && analysis.entryAllowed) {
+      const margin = balance * (config.position_size_pct / 100);
+      const side = analysis.bias === 'bullish' ? 'long' : 'short';
+      const sl = side === 'long' ? currentPrice * 0.97 : currentPrice * 1.03;
+      const tp = side === 'long' ? currentPrice * 1.06 : currentPrice * 0.94;
+      const qty = (margin * config.leverage) / currentPrice;
+
+      await supabase.from('bot_positions').insert({
+        bot_config_id: config.id, side, entry_price: currentPrice, quantity: qty,
+        leverage: config.leverage, margin_used: margin, stop_loss: sl, take_profit: tp,
+        entry_reason: analysis.reasoning
+      });
+      await supabase.from('bot_config').update({ current_balance: balance - margin }).eq('id', config.id);
+      await logBot(supabase, config.id, 'trade', `Opened ${side.toUpperCase()} @ $${currentPrice}`);
+    }
+
+    // 3. Poprawione Logi (Synchronizacja z UI)
+    await logBot(supabase, config.id, 'info', 
+      `Tick: $${currentPrice.toFixed(0)} | Bias: ${analysis.bias} | BullKeys: ${analysis.bullKeys}/3 BearKeys: ${analysis.bearKeys}/3 | RSI: ${analysis.rsi.toFixed(1)}`,
+      { reasoning: analysis.reasoning }
+    );
+
+    return new Response(JSON.stringify({ analysis, executed: true }), { headers: corsHeaders });
+
+  } catch (e) {
+    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+  }
+});
+
+async function logBot(supabase: any, configId: string, level: string, message: string, data?: any) {
+  await supabase.from('bot_logs').insert({ bot_config_id: configId, level, message, data });
+} last = closes.length - 1;
   const price = closes[last];
 
   const ema20 = ema(closes, 20);
