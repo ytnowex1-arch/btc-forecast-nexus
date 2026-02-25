@@ -20,20 +20,11 @@ async function fetchKlines(symbol: string, interval: string, limit = 500): Promi
   }));
 }
 
-// ========== WSKAŹNIKI TECHNICZNE ==========
+// ========== ANALIZA TECHNICZNA (FUNKCJE POMOCNICZE) ==========
 function ema(data: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const result = [data[0]];
   for (let i = 1; i < data.length; i++) result.push(data[i] * k + result[i-1] * (1-k));
-  return result;
-}
-
-function sma(data: number[], period: number): number[] {
-  const result: number[] = [];
-  for (let i = 0; i < data.length; i++) {
-    if (i < period - 1) { result.push(NaN); continue; }
-    result.push(data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period);
-  }
   return result;
 }
 
@@ -45,127 +36,94 @@ function rsi(closes: number[], period = 14): number[] {
     if (c > 0) ag += c; else al += Math.abs(c);
   }
   ag /= period; al /= period;
-  r.push(al === 0 ? 100 : 100 - 100/(1+ag/al));
-  for (let i = period+1; i < closes.length; i++) {
+  for (let i = period + 1; i < closes.length; i++) {
     const c = closes[i] - closes[i-1];
-    ag = (ag*(period-1) + Math.max(c,0))/period;
-    al = (al*(period-1) + Math.max(-c,0))/period;
-    r.push(al === 0 ? 100 : 100 - 100/(1+ag/al));
+    ag = (ag * (period - 1) + Math.max(c, 0)) / period;
+    al = (al * (period - 1) + Math.max(-c, 0)) / period;
+    r.push(al === 0 ? 100 : 100 - 100 / (1 + ag / al));
   }
   return r;
 }
 
-function macd(closes: number[]) {
-  const f = ema(closes, 12), s = ema(closes, 26);
-  const line = f.map((v,i) => v - s[i]);
-  const sig = ema(line, 9);
-  return { line, signal: sig, hist: line.map((v,i) => v - sig[i]) };
-}
-
-function bollingerBands(closes: number[], period = 20, numStdDev = 2) {
-  const mid = sma(closes, period);
-  const upper: number[] = [], lower: number[] = [];
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period-1) { upper.push(NaN); lower.push(NaN); continue; }
-    const slice = closes.slice(i-period+1, i+1);
-    const std = Math.sqrt(slice.reduce((s,v) => s + (v-mid[i])**2, 0)/period);
-    upper.push(mid[i] + numStdDev*std);
-    lower.push(mid[i] - numStdDev*std);
-  }
-  return { upper, middle: mid, lower };
-}
-
-function atr(highs: number[], lows: number[], closes: number[], period = 14): number[] {
-  const tr: number[] = [highs[0] - lows[0]];
-  for (let i = 1; i < closes.length; i++) {
-    tr.push(Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1])));
-  }
-  return ema(tr, period);
-}
-
-// ========== ANALIZA RYNKU (STRATEGIA SNIPER) ==========
+// ========== GŁÓWNA LOGIKA ANALIZY (SYNCHRONIZACJA Z UI) ==========
 function analyzeMarket(klines: Kline[]) {
   const closes = klines.map(k => k.close);
-  const highs = klines.map(k => k.high);
-  const lows = klines.map(k => k.low);
-  const volumes = klines.map(k => k.volume);
   const last = closes.length - 1;
   const price = closes[last];
-
+  
   const rsiVals = rsi(closes);
-  const macdData = macd(closes);
-  const bb = bollingerBands(closes);
   const ema20 = ema(closes, 20);
   const ema50 = ema(closes, 50);
   const ema200 = ema(closes, 200);
-  const atrVals = atr(highs, lows, closes);
-
-  const lastRsi = rsiVals[last];
-  const lastAtr = atrVals[last];
-
-  // 1. FILTR WOLUMENU (Poluzowany do 10%)
-  const avgVol = volumes.slice(last - 20, last).reduce((a, b) => a + b, 0) / 20;
-  if (volumes[last] < avgVol * 0.1) {
-    return { bias: 'neutral', skipReason: 'Low volume', rsi: lastRsi, price, bullKeys: 0, bearKeys: 0, reasoning: 'Market too quiet' };
-  }
-
-  // 2. KONTEKST (MOMENTUM + STRUKTURA)
-  let longContext = false, shortContext = false;
   
-  if (price > ema200[last] && ema50[last] > ema200[last]) longContext = true; // Trend wzrostowy
-  if (price > ema20[last] && macdData.hist[last] > 0) longContext = true; // Silne momentum
+  const currentRsi = rsiVals[rsiVals.length - 1];
   
-  if (price < ema200[last] && ema50[last] < ema200[last]) shortContext = true; // Trend spadkowy
-  if (price < ema20[last] && macdData.hist[last] < 0) shortContext = true; // Słabe momentum
+  let bullKeys = 0;
+  let bearKeys = 0;
+  const bullCond: string[] = [];
+  const bearCond: string[] = [];
 
-  // 3. LICZENIE KLUCZY (Zgodnie z UI)
-  let bullKeys = 0, bearKeys = 0;
-  const bullCond: string[] = [], bearCond: string[] = [];
+  // 1. RSI (Synchronizacja z UI)
+  if (currentRsi < 35) { bullKeys++; bullCond.push("RSI Oversold"); }
+  else if (currentRsi > 65) { bearKeys++; bearCond.push("RSI Overbought"); }
 
-  // RSI
-  if (lastRsi < 35) { bullKeys++; bullCond.push('RSI Oversold'); }
-  if (lastRsi > 65) { bearKeys++; bearCond.push('RSI Overbought'); }
+  // 2. Trend Momentum (EMA20)
+  if (price > ema20[last]) { bullKeys++; bullCond.push("Price > EMA20"); }
+  else { bearKeys++; bearCond.push("Price < EMA20"); }
 
-  // MACD
-  if (macdData.hist[last] > 0 && macdData.hist[last] > macdData.hist[last-1]) { bullKeys++; bullCond.push('MACD Rising'); }
-  if (macdData.hist[last] < 0 && macdData.hist[last] < macdData.hist[last-1]) { bearKeys++; bearCond.push('MACD Falling'); }
+  // 3. Golden/Death Cross (Struktura)
+  if (ema50[last] > ema200[last]) { bullKeys++; bullCond.push("Golden Structure"); }
+  else { bearKeys++; bearCond.push("Death Structure"); }
 
-  // Bollinger
-  if (price < bb.lower[last]) { bullKeys++; bullCond.push('Below BB Lower'); }
-  if (price > bb.upper[last]) { bearKeys++; bearCond.push('Above BB Upper'); }
-
-  // Candlesticks (Hammer/Engulfing)
+  // 4. Candlestick (Ostatnia świeca)
   const isGreen = closes[last] > klines[last].open;
-  const body = Math.abs(closes[last] - klines[last].open);
-  const prevBody = Math.abs(closes[last-1] - klines[last-1].open);
-  if (isGreen && body > prevBody) { bullKeys++; bullCond.push('Bullish Engulfing'); }
-  if (!isGreen && body > prevBody) { bearKeys++; bearCond.push('Bearish Engulfing'); }
+  if (isGreen) { bullKeys++; bullCond.push("Green Candle"); }
+  else { bearKeys++; bearCond.push("Red Candle"); }
 
-  // Volume Confirmation
-  if (volumes[last] > avgVol * 1.2) {
-    if (isGreen) { bullKeys++; bullCond.push('Volume Confirm Bull'); }
-    else { bearKeys++; bearCond.push('Volume Confirm Bear'); }
+  // 5. Volume Trend
+  const avgVol = klines.slice(last - 20, last).reduce((acc, k) => acc + k.volume, 0) / 20;
+  if (klines[last].volume > avgVol) {
+    if (isGreen) { bullKeys++; bullCond.push("Vol Confirm Bull"); }
+    else { bearKeys++; bearCond.push("Vol Confirm Bear"); }
   }
 
+  // LOGIKA DECYZYJNA
   const REQUIRED = 3;
   let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
   let entryAllowed = false;
+  let skipReason = "";
 
-  if (bullKeys >= REQUIRED && longContext && lastRsi < 80) {
-    bias = 'bullish'; entryAllowed = true;
-  } else if (bearKeys >= REQUIRED && shortContext && lastRsi > 20) {
-    bias = 'bearish'; entryAllowed = true;
+  // Momentum Long Override: Jeśli trend jest silny, pozwalamy na Longa nawet przy wyższym RSI (do 80)
+  if (bullKeys >= REQUIRED) {
+    if (currentRsi > 80) {
+      skipReason = "RSI too high for Long";
+    } else {
+      bias = 'bullish';
+      entryAllowed = true;
+    }
+  } else if (bearKeys >= REQUIRED) {
+    if (currentRsi < 20) {
+      skipReason = "RSI too low for Short";
+    } else {
+      bias = 'bearish';
+      entryAllowed = true;
+    }
+  } else {
+    skipReason = `Not enough keys (${Math.max(bullKeys, bearKeys)}/${REQUIRED})`;
   }
 
   return {
-    bias, price, rsi: lastRsi, atr: lastAtr, 
-    bullKeys, bearKeys,
-    reasoning: `Bull: ${bullKeys}/${REQUIRED} (${bullCond.join(',')}) | Bear: ${bearKeys}/${REQUIRED} (${bearCond.join(',')})`,
-    entryAllowed
+    bias,
+    bullKeys,
+    bearKeys,
+    price,
+    rsi: currentRsi,
+    entryAllowed,
+    skipReason,
+    reasoning: `Bull: ${bullCond.join(", ")} | Bear: ${bearCond.join(", ")}`
   };
 }
 
-// ========== SERWER I LOGIKA TRANSAKCJI ==========
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
@@ -178,65 +136,68 @@ serve(async (req) => {
     const config = configs[0];
 
     if (!config.is_active) {
-      return new Response(JSON.stringify({ config, executed: false }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }});
+      return new Response(JSON.stringify({ message: "Bot inactive" }), { headers: corsHeaders });
     }
 
-    const klines = await fetchKlines(config.symbol, config.interval, 200);
+    const klines = await fetchKlines(config.symbol, config.interval, 300);
     const analysis = analyzeMarket(klines);
-    const currentPrice = analysis.price;
-    let balance = Number(config.current_balance);
+    
+    // Pobierz otwarte pozycje
+    const { data: openPositions } = await supabase.from('bot_positions').select('*').eq('bot_config_id', config.id).eq('status', 'open');
 
-    const { data: openPos } = await supabase.from('bot_positions').select('*').eq('bot_config_id', config.id).eq('status', 'open');
-
-    // 1. Zarządzanie otwartą pozycją
-    for (const pos of openPos || []) {
-      const pnl = pos.side === 'long' ? (currentPrice - pos.entry_price) * pos.quantity : (pos.entry_price - currentPrice) * pos.quantity;
-      const pnlPct = (pnl / pos.margin_used) * 100;
-
-      // Trailing SL
-      if (pnlPct >= 1.5) {
-        const trail = analysis.atr * 1.5;
-        const newSL = pos.side === 'long' ? Math.max(pos.stop_loss, currentPrice - trail) : Math.min(pos.stop_loss, currentPrice + trail);
-        if (newSL !== pos.stop_loss) await supabase.from('bot_positions').update({ stop_loss: newSL }).eq('id', pos.id);
-      }
-
-      // Zamknięcie (SL/TP)
-      if (currentPrice <= pos.stop_loss && pos.side === 'long' || currentPrice >= pos.stop_loss && pos.side === 'short' || pnlPct >= 6) {
-        const finalBal = balance + pos.margin_used + pnl;
-        await supabase.from('bot_positions').update({ status: 'closed', exit_price: currentPrice, pnl, pnl_pct: pnlPct, closed_at: new Date().toISOString() }).eq('id', pos.id);
-        await supabase.from('bot_config').update({ current_balance: finalBal }).eq('id', config.id);
-        balance = finalBal;
-        await logBot(supabase, config.id, 'trade', `Closed ${pos.side} | PnL: $${pnl.toFixed(2)}`);
-      }
-    }
-
-    // 2. Otwarcie nowej pozycji
-    if ((!openPos || openPos.length === 0) && analysis.entryAllowed) {
+    // LOGIKA OTWIERANIA POZYCJI
+    if ((!openPositions || openPositions.length === 0) && analysis.entryAllowed) {
+      const balance = Number(config.current_balance);
       const margin = balance * (config.position_size_pct / 100);
       const side = analysis.bias === 'bullish' ? 'long' : 'short';
-      const sl = side === 'long' ? currentPrice * 0.97 : currentPrice * 1.03;
-      const tp = side === 'long' ? currentPrice * 1.06 : currentPrice * 0.94;
-      const qty = (margin * config.leverage) / currentPrice;
+      
+      // Stop Loss i Take Profit (uproszczone dla bezpieczeństwa)
+      const sl = side === 'long' ? analysis.price * 0.98 : analysis.price * 1.02;
+      const tp = side === 'long' ? analysis.price * 1.05 : analysis.price * 0.95;
+      const qty = (margin * config.leverage) / analysis.price;
 
-      await supabase.from('bot_positions').insert({
-        bot_config_id: config.id, side, entry_price: currentPrice, quantity: qty,
-        leverage: config.leverage, margin_used: margin, stop_loss: sl, take_profit: tp,
-        entry_reason: analysis.reasoning
-      });
-      await supabase.from('bot_config').update({ current_balance: balance - margin }).eq('id', config.id);
-      await logBot(supabase, config.id, 'trade', `Opened ${side.toUpperCase()} @ $${currentPrice}`);
+      if (margin >= 10) { // Binance minimum
+        await supabase.from('bot_positions').insert({
+          bot_config_id: config.id,
+          side,
+          entry_price: analysis.price,
+          quantity: qty,
+          leverage: config.leverage,
+          margin_used: margin,
+          stop_loss: sl,
+          take_profit: tp,
+          status: 'open',
+          entry_reason: analysis.reasoning
+        });
+        
+        await supabase.from('bot_config').update({ current_balance: balance - margin }).eq('id', config.id);
+        await supabase.from('bot_logs').insert({
+          bot_config_id: config.id,
+          level: 'trade',
+          message: `🚀 OPEN ${side.toUpperCase()} @ ${analysis.price}`,
+          data: { reasoning: analysis.reasoning }
+        });
+      }
     }
 
-    // 3. Poprawione Logi (Synchronizacja z UI)
-    await logBot(supabase, config.id, 'info', 
-      `Tick: $${currentPrice.toFixed(0)} | Bias: ${analysis.bias} | BullKeys: ${analysis.bullKeys}/3 BearKeys: ${analysis.bearKeys}/3 | RSI: ${analysis.rsi.toFixed(1)}`,
-      { reasoning: analysis.reasoning }
-    );
+    // Logowanie statusu (Synchronizacja z UI)
+    await supabase.from('bot_logs').insert({
+      bot_config_id: config.id,
+      level: 'info',
+      message: `Tick: $${analysis.price.toFixed(2)} | Bias: ${analysis.bias} | Keys: B:${analysis.bullKeys} S:${analysis.bearKeys} | RSI: ${analysis.rsi.toFixed(1)}`,
+      data: { skipReason: analysis.skipReason }
+    });
 
-    return new Response(JSON.stringify({ analysis, executed: true }), { headers: corsHeaders });
+    return new Response(JSON.stringify({ analysis, executed: true }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
 
-  } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500, headers: corsHeaders,
+    });
+  }
+});    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
   }
 });
 
