@@ -20,7 +20,7 @@ async function fetchKlines(symbol: string, interval: string, limit = 500): Promi
   }));
 }
 
-// ========== ANALIZA TECHNICZNA (FUNKCJE MATEMATYCZNE) ==========
+// ========== WSKAŹNIKI (ZSYNCHRONIZOWANE Z PANELEM UI) ==========
 function ema(data: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const result = [data[0]];
@@ -45,86 +45,69 @@ function rsi(closes: number[], period = 14): number[] {
   return r;
 }
 
-function macd(closes: number[]) {
-  const f = ema(closes, 12), s = ema(closes, 26);
-  const line = f.map((v,i) => v - s[i]);
-  const sig = ema(line, 9);
-  return { hist: line.map((v,i) => v - sig[i]) };
-}
-
-// ========== GŁÓWNA LOGIKA ANALIZY (SYNCHRONIZACJA Z UI) ==========
 function analyzeMarket(klines: Kline[]) {
   const closes = klines.map(k => k.close);
-  const volumes = klines.map(k => k.volume);
   const last = closes.length - 1;
   const price = closes[last];
   
   const rsiVals = rsi(closes);
-  const macdData = macd(closes);
   const ema20 = ema(closes, 20);
   const ema50 = ema(closes, 50);
   const ema200 = ema(closes, 200);
-  
-  const currentRsi = rsiVals[rsiVals.length - 1];
-  const avgVol = volumes.slice(last - 20, last).reduce((a, b) => a + b, 0) / 20;
-
-  // 1. FILTR WOLUMENU (Poluzowany do 10% średniej)
-  if (volumes[last] < avgVol * 0.1) {
-    return { bias: 'neutral', bullKeys: 0, bearKeys: 0, price, rsi: currentRsi, entryAllowed: false, skipReason: "Low volume" };
-  }
+  const curRsi = rsiVals[rsiVals.length - 1];
 
   let bullKeys = 0;
   let bearKeys = 0;
-  const reasons: string[] = [];
+  const bullLog: string[] = [];
+  const bearLog: string[] = [];
 
-  // --- LICZENIE KLUCZY (Synchronizacja z Twoim UI) ---
+  // --- KLUCZE ZGODNE Z TWOIM PANELEM ---
+  // 1. RSI
+  if (curRsi < 40) { bullKeys++; bullLog.push("RSI Low"); }
+  if (curRsi > 60) { bearKeys++; bearLog.push("RSI High"); }
   
-  // RSI
-  if (currentRsi < 40) bullKeys++; else if (currentRsi > 60) bearKeys++;
+  // 2. Momentum (Cena vs EMA20)
+  if (price > ema20[last]) { bullKeys++; bullLog.push("Above EMA20"); }
+  else { bearKeys++; bearLog.push("Below EMA20"); }
   
-  // MACD Momentum
-  if (macdData.hist[last] > macdData.hist[last-1]) bullKeys++; else bearKeys++;
+  // 3. Struktura (EMA 50/200)
+  if (ema50[last] > ema200[last]) { bullKeys++; bullLog.push("Bull Structure"); }
+  else { bearKeys++; bearLog.push("Bear Structure"); }
   
-  // EMA 20 (Short term trend)
-  if (price > ema20[last]) bullKeys++; else bearKeys++;
-  
-  // EMA 50/200 (Long term structure)
-  if (ema50[last] > ema200[last]) bullKeys++; else bearKeys++;
-  
-  // Candle Color & Body
+  // 4. Kolor Świecy
   const isGreen = closes[last] > klines[last].open;
-  if (isGreen) bullKeys++; else bearKeys++;
+  if (isGreen) { bullKeys++; bullLog.push("Green Candle"); }
+  else { bearKeys++; bearLog.push("Red Candle"); }
 
-  // --- LOGIKA KONTEKSTU (BREAKOUT / MOMENTUM) ---
-  let contextLong = false;
-  let contextShort = false;
+  // 5. Volume Breakout
+  const avgVol = klines.slice(last - 20, last).reduce((s, k) => s + k.volume, 0) / 20;
+  if (klines[last].volume > avgVol) {
+    if (isGreen) { bullKeys++; bullLog.push("Vol Surge Bull"); }
+    else { bearKeys++; bearLog.push("Vol Surge Bear"); }
+  }
 
-  // Sprawdzanie przebicia szczytu (Breakout)
-  const recentHigh = Math.max(...klines.slice(last - 20, last).map(k => k.high));
-  if (price > recentHigh || (price > ema50[last] && isGreen)) contextLong = true;
-  
-  const recentLow = Math.min(...klines.slice(last - 20, last).map(k => k.low));
-  if (price < recentLow || (price < ema50[last] && !isGreen)) contextShort = true;
+  // --- LOGIKA KONTEKSTU (BREAKOUT) ---
+  const recentHigh = Math.max(...klines.slice(last-20, last).map(k => k.high));
+  const breakout = price >= recentHigh;
 
-  // DECYZJA
-  const MIN_KEYS = 3;
+  const REQUIRED = 3;
   let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
   let entryAllowed = false;
   let skipReason = "";
 
-  if (bullKeys >= MIN_KEYS && contextLong) {
-    if (currentRsi > 82) skipReason = "RSI too high (>82)";
+  if (bullKeys >= REQUIRED && (breakout || price > ema50[last])) {
+    if (curRsi > 82) skipReason = "RSI too high for Long";
     else { bias = 'bullish'; entryAllowed = true; }
-  } else if (bearKeys >= MIN_KEYS && contextShort) {
-    if (currentRsi < 18) skipReason = "RSI too low (<18)";
+  } else if (bearKeys >= REQUIRED) {
+    if (curRsi < 18) skipReason = "RSI too low for Short";
     else { bias = 'bearish'; entryAllowed = true; }
   } else {
-    skipReason = `Need ${MIN_KEYS} keys + Context. Got B:${bullKeys} S:${bearKeys}`;
+    skipReason = `Not enough keys (${Math.max(bullKeys, bearKeys)}/${REQUIRED})`;
   }
 
   return {
-    bias, bullKeys, bearKeys, price, rsi: currentRsi, entryAllowed, skipReason,
-    reasoning: `B:${bullKeys} S:${bearKeys} | RSI:${currentRsi.toFixed(1)} | Context:${contextLong?'L':'S'}`
+    bias, bullKeys, bearKeys, price, rsi: curRsi, entryAllowed, skipReason,
+    reasoning: `Bull: ${bullKeys}/5 (${bullLog.join(",")}) | Bear: ${bearKeys}/5 (${bearLog.join(",")})`
   };
 }
 
@@ -139,7 +122,7 @@ serve(async (req) => {
     const { data: configs } = await supabase.from('bot_config').select('*').limit(1);
     const config = configs[0];
 
-    if (!config.is_active) return new Response(JSON.stringify({ message: "Bot OFF" }), { headers: corsHeaders });
+    if (!config.is_active) return new Response(JSON.stringify({ message: "Off" }), { headers: corsHeaders });
 
     const klines = await fetchKlines(config.symbol, config.interval, 300);
     const analysis = analyzeMarket(klines);
@@ -153,8 +136,8 @@ serve(async (req) => {
       
       if (margin >= 10) {
         const side = analysis.bias === 'bullish' ? 'long' : 'short';
-        const sl = side === 'long' ? analysis.price * 0.97 : analysis.price * 1.03;
-        const tp = side === 'long' ? analysis.price * 1.06 : analysis.price * 0.94;
+        const sl = side === 'long' ? analysis.price * 0.98 : analysis.price * 1.02;
+        const tp = side === 'long' ? analysis.price * 1.05 : analysis.price * 0.95;
         const qty = (margin * config.leverage) / analysis.price;
 
         await supabase.from('bot_positions').insert({
@@ -164,90 +147,24 @@ serve(async (req) => {
         });
         
         await supabase.from('bot_config').update({ current_balance: balance - margin }).eq('id', config.id);
-        await logBot(supabase, config.id, 'trade', `🚀 OPEN ${side.toUpperCase()} @ ${analysis.price}`);
+        await supabase.from('bot_logs').insert({ bot_config_id: config.id, level: 'trade', message: `🚀 OPEN ${side.toUpperCase()} @ ${analysis.price}` });
       }
     }
 
-    // LOGOWANIE (Fix Undefined)
-    await logBot(supabase, config.id, 'info', 
-      `Tick: $${analysis.price.toFixed(0)} | Bias: ${analysis.bias} | Keys: B:${analysis.bullKeys}/5 S:${analysis.bearKeys}/5 | RSI: ${analysis.rsi.toFixed(1)}`,
-      { skipReason: analysis.skipReason }
-    );
+    // LOGOWANIE DO BAZY (Naprawione undefined)
+    await supabase.from('bot_logs').insert({
+      bot_config_id: config.id,
+      level: 'info',
+      message: `Tick: $${analysis.price.toFixed(0)} | Bias: ${analysis.bias} | Keys: B:${analysis.bullKeys}/5 S:${analysis.bearKeys}/5 | RSI: ${analysis.rsi.toFixed(1)}`,
+      data: { skipReason: analysis.skipReason, reasoning: analysis.reasoning }
+    });
 
-    return new Response(JSON.stringify({ analysis, executed: true }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }});
+    return new Response(JSON.stringify({ analysis, executed: true }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
   }
-});
-
-async function logBot(supabase: any, configId: string, level: string, message: string, data?: any) {
-  await supabase.from('bot_logs').insert({ bot_config_id: configId, level, message, data });
-}nst bbCheck = priceOutsideBB2(price, bb.upper[last], bb.lower[last]);
-
-  // Count bullish conditions
-  let bullKeys = 0, bearKeys = 0;
-  const bullConditions: string[] = [], bearConditions: string[] = [];
-
-  // A: RSI Divergence
-  if (rsiDiv.bullish) { bullKeys++; bullConditions.push('RSI Divergence ↑'); }
-  if (rsiDiv.bearish) { bearKeys++; bearConditions.push('RSI Divergence ↓'); }
-
-  // B: Candlestick Pattern
-  if (candles.bullish) { bullKeys++; bullConditions.push(`${candles.pattern} ↑`); }
-  if (candles.bearish) { bearKeys++; bearConditions.push(`${candles.pattern} ↓`); }
-
-  // C: Volume Spike
-  if (volumeSpike) {
-    // Volume spike confirms the direction of current candle
-    const lastCandle = klines[last];
-    if (lastCandle.close > lastCandle.open) { bullKeys++; bullConditions.push('Volume Spike (bullish) ↑'); }
-    else { bearKeys++; bearConditions.push('Volume Spike (bearish) ↓'); }
-  }
-
-  // D: MACD Crossover
-  if (macdCrossoverBull) { bullKeys++; bullConditions.push('MACD Bullish Cross ↑'); }
-  if (macdCrossoverBear) { bearKeys++; bearConditions.push('MACD Bearish Cross ↓'); }
-
-  // E: Price outside 2nd StdDev BB (mean reversion)
-  if (bbCheck.outside) {
-    if (bbCheck.side === 'below') { bullKeys++; bullConditions.push('Below BB Lower (mean reversion) ↑'); }
-    if (bbCheck.side === 'above') { bearKeys++; bearConditions.push('Above BB Upper (mean reversion) ↓'); }
-  }
-
-  reasoning.push(`Bull keys: ${bullKeys}/5 [${bullConditions.join(', ') || 'none'}]`);
-  reasoning.push(`Bear keys: ${bearKeys}/5 [${bearConditions.join(', ') || 'none'}]`);
-
-  // Determine bias
-  const REQUIRED_KEYS = 3;
-  let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
-  let entryAllowed = false;
-  let skipReason = '';
-
-  if (bullKeys >= REQUIRED_KEYS && longContext) {
-    bias = 'bullish';
-    entryAllowed = true;
-  } else if (bearKeys >= REQUIRED_KEYS && shortContext) {
-    bias = 'bearish';
-    entryAllowed = true;
-  } else {
-    if (bullKeys >= REQUIRED_KEYS && !longContext) {
-      skipReason = `Trade skipped: ${bullKeys}/5 bullish keys met BUT no long context (no support/double bottom)`;
-    } else if (bearKeys >= REQUIRED_KEYS && !shortContext) {
-      skipReason = `Trade skipped: ${bearKeys}/5 bearish keys met BUT no short context (no resistance/failed breakout)`;
-    } else {
-      const maxKeys = Math.max(bullKeys, bearKeys);
-      const direction = bullKeys > bearKeys ? 'bullish' : 'bearish';
-      skipReason = `Trade skipped: Only ${maxKeys}/5 ${direction} conditions met (need ${REQUIRED_KEYS})`;
-    }
-  }
-
-  // RSI guardrails on top
-  if (bias === 'bullish' && lastRsi > 75) {
-    bias = 'neutral'; entryAllowed = false;
-    skipReason = '⚠ RSI guardrail: RSI > 75, blocking long';
-  }
-  if (bias === 'bearish' && lastRsi < 25) {
+});stRsi < 25) {
     bias = 'neutral'; entryAllowed = false;
     skipReason = '⚠ RSI guardrail: RSI < 25, blocking short';
   }
