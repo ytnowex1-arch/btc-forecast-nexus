@@ -1,5 +1,15 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  calculateEMA,
+  calculateSMA,
+  calculateRSI,
+  calculateMACD,
+  calculateBollingerBands,
+  calculateATR,
+  calculateAllIndicators,
+  type IndicatorResults,
+} from "../_shared/indicators.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -26,69 +36,6 @@ async function fetchCurrentPrice(symbol: string): Promise<number> {
   return parseFloat(data.price);
 }
 
-// ========== INDICATORS ==========
-function ema(data: number[], period: number): number[] {
-  const k = 2 / (period + 1);
-  const result = [data[0]];
-  for (let i = 1; i < data.length; i++) result.push(data[i] * k + result[i-1] * (1-k));
-  return result;
-}
-
-function sma(data: number[], period: number): number[] {
-  const result: number[] = [];
-  for (let i = 0; i < data.length; i++) {
-    if (i < period - 1) { result.push(NaN); continue; }
-    result.push(data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period);
-  }
-  return result;
-}
-
-function rsi(closes: number[], period = 14): number[] {
-  const r: number[] = new Array(period).fill(50);
-  let ag = 0, al = 0;
-  for (let i = 1; i <= period; i++) {
-    const c = closes[i] - closes[i-1];
-    if (c > 0) ag += c; else al += Math.abs(c);
-  }
-  ag /= period; al /= period;
-  r.push(al === 0 ? 100 : 100 - 100/(1+ag/al));
-  for (let i = period+1; i < closes.length; i++) {
-    const c = closes[i] - closes[i-1];
-    ag = (ag*(period-1) + Math.max(c,0))/period;
-    al = (al*(period-1) + Math.max(-c,0))/period;
-    r.push(al === 0 ? 100 : 100 - 100/(1+ag/al));
-  }
-  return r;
-}
-
-function macd(closes: number[]) {
-  const f = ema(closes, 12), s = ema(closes, 26);
-  const line = f.map((v,i) => v - s[i]);
-  const sig = ema(line, 9);
-  return { line, signal: sig, hist: line.map((v,i) => v - sig[i]) };
-}
-
-function bollingerBands(closes: number[], period = 20, numStdDev = 2) {
-  const mid = sma(closes, period);
-  const upper: number[] = [], lower: number[] = [];
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period-1) { upper.push(NaN); lower.push(NaN); continue; }
-    const slice = closes.slice(i-period+1, i+1);
-    const std = Math.sqrt(slice.reduce((s,v) => s + (v-mid[i])**2, 0)/period);
-    upper.push(mid[i] + numStdDev*std);
-    lower.push(mid[i] - numStdDev*std);
-  }
-  return { upper, middle: mid, lower };
-}
-
-function atr(highs: number[], lows: number[], closes: number[], period = 14): number[] {
-  const tr: number[] = [highs[0] - lows[0]];
-  for (let i = 1; i < closes.length; i++) {
-    tr.push(Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1])));
-  }
-  return ema(tr, period);
-}
-
 // ========== CONTEXT FILTER: Support/Resistance ==========
 function findSupportResistance(highs: number[], lows: number[], closes: number[], lookback = 50) {
   const last = closes.length - 1;
@@ -96,7 +43,6 @@ function findSupportResistance(highs: number[], lows: number[], closes: number[]
   const recentLows = lows.slice(Math.max(0, last - lookback), last + 1);
   const recentHighs = highs.slice(Math.max(0, last - lookback), last + 1);
 
-  // Find swing lows (support zones)
   const supports: number[] = [];
   for (let i = 2; i < recentLows.length - 2; i++) {
     if (recentLows[i] < recentLows[i-1] && recentLows[i] < recentLows[i-2] &&
@@ -105,7 +51,6 @@ function findSupportResistance(highs: number[], lows: number[], closes: number[]
     }
   }
 
-  // Find swing highs (resistance zones)
   const resistances: number[] = [];
   for (let i = 2; i < recentHighs.length - 2; i++) {
     if (recentHighs[i] > recentHighs[i-1] && recentHighs[i] > recentHighs[i-2] &&
@@ -114,9 +59,8 @@ function findSupportResistance(highs: number[], lows: number[], closes: number[]
     }
   }
 
-  // Double bottom detection: two similar lows with a bounce between
   let doubleBottom = false;
-  const tolerance = price * 0.005; // 0.5% tolerance
+  const tolerance = price * 0.005;
   for (let i = 0; i < supports.length - 1; i++) {
     if (Math.abs(supports[i] - supports[i+1]) < tolerance && price > supports[i]) {
       doubleBottom = true;
@@ -124,21 +68,17 @@ function findSupportResistance(highs: number[], lows: number[], closes: number[]
     }
   }
 
-  // Failed breakout detection: price approached a high but got rejected
   let failedBreakout = false;
   if (resistances.length > 0) {
-    const nearestResistance = resistances.reduce((a, b) => 
+    const nearestResistance = resistances.reduce((a, b) =>
       Math.abs(a - price) < Math.abs(b - price) ? a : b);
-    // Price reached within 0.3% of resistance and pulled back
     const recentHigh = Math.max(...highs.slice(Math.max(0, last - 5), last + 1));
     if (recentHigh >= nearestResistance * 0.997 && price < nearestResistance) {
       failedBreakout = true;
     }
   }
 
-  // Near support zone check
   const nearSupport = supports.some(s => price >= s * 0.995 && price <= s * 1.01);
-  // Near resistance zone check
   const nearResistance = resistances.some(r => price >= r * 0.99 && price <= r * 1.005);
 
   return { supports, resistances, doubleBottom, failedBreakout, nearSupport, nearResistance };
@@ -146,88 +86,52 @@ function findSupportResistance(highs: number[], lows: number[], closes: number[]
 
 // ========== THREE-KEY ENTRY CONDITIONS ==========
 
-// Condition A: RSI Divergence
 function detectRSIDivergence(closes: number[], rsiVals: number[], lookback = 20): { bullish: boolean; bearish: boolean } {
   const last = closes.length - 1;
   const start = Math.max(0, last - lookback);
-  
   let bullishDiv = false, bearishDiv = false;
-
-  // Find recent swing lows in price and check RSI
   for (let i = start + 2; i < last - 1; i++) {
-    // Bullish: price makes lower low, RSI makes higher low
-    if (closes[last] < closes[i] && rsiVals[last] > rsiVals[i] && rsiVals[i] < 40) {
-      bullishDiv = true;
-    }
-    // Bearish: price makes higher high, RSI makes lower high
-    if (closes[last] > closes[i] && rsiVals[last] < rsiVals[i] && rsiVals[i] > 60) {
-      bearishDiv = true;
-    }
+    if (closes[last] < closes[i] && rsiVals[last] > rsiVals[i] && rsiVals[i] < 40) bullishDiv = true;
+    if (closes[last] > closes[i] && rsiVals[last] < rsiVals[i] && rsiVals[i] > 60) bearishDiv = true;
   }
   return { bullish: bullishDiv, bearish: bearishDiv };
 }
 
-// Condition B: Candlestick Patterns
 function detectCandlestickPatterns(klines: Kline[]): { bullish: boolean; bearish: boolean; pattern: string } {
   const last = klines.length - 1;
   const c = klines[last], p = klines[last - 1], pp = klines[last - 2];
   const bodyC = Math.abs(c.close - c.open);
   const rangeC = c.high - c.low;
   const bodyP = Math.abs(p.close - p.open);
-  const rangeP = p.high - p.low;
-
   let bullish = false, bearish = false, pattern = '';
 
-  // Pin Bar (Hammer / Shooting Star)
   if (rangeC > 0) {
     const lowerWick = Math.min(c.open, c.close) - c.low;
     const upperWick = c.high - Math.max(c.open, c.close);
-    // Bullish pin bar (hammer): long lower wick, small body at top
-    if (lowerWick > bodyC * 2 && upperWick < bodyC * 0.5) {
-      bullish = true; pattern = 'Hammer';
-    }
-    // Bearish pin bar (shooting star): long upper wick, small body at bottom
-    if (upperWick > bodyC * 2 && lowerWick < bodyC * 0.5) {
-      bearish = true; pattern = 'Shooting Star';
-    }
+    if (lowerWick > bodyC * 2 && upperWick < bodyC * 0.5) { bullish = true; pattern = 'Hammer'; }
+    if (upperWick > bodyC * 2 && lowerWick < bodyC * 0.5) { bearish = true; pattern = 'Shooting Star'; }
   }
 
-  // Engulfing
   if (!bullish && !bearish && bodyP > 0) {
-    // Bullish engulfing: prev was red, current is green and engulfs
-    if (p.close < p.open && c.close > c.open && c.close > p.open && c.open < p.close) {
-      bullish = true; pattern = 'Bullish Engulfing';
-    }
-    // Bearish engulfing: prev was green, current is red and engulfs
-    if (p.close > p.open && c.close < c.open && c.close < p.open && c.open > p.close) {
-      bearish = true; pattern = 'Bearish Engulfing';
-    }
+    if (p.close < p.open && c.close > c.open && c.close > p.open && c.open < p.close) { bullish = true; pattern = 'Bullish Engulfing'; }
+    if (p.close > p.open && c.close < c.open && c.close < p.open && c.open > p.close) { bearish = true; pattern = 'Bearish Engulfing'; }
   }
 
-  // Morning Star / Evening Star (3-candle)
   if (!bullish && !bearish) {
     const bodyPP = Math.abs(pp.close - pp.open);
-    // Morning Star: big red, small body (doji-ish), big green
-    if (pp.close < pp.open && bodyP < bodyPP * 0.3 && c.close > c.open && bodyC > bodyPP * 0.5) {
-      bullish = true; pattern = 'Morning Star';
-    }
-    // Evening Star: big green, small body, big red
-    if (pp.close > pp.open && bodyP < bodyPP * 0.3 && c.close < c.open && bodyC > bodyPP * 0.5) {
-      bearish = true; pattern = 'Evening Star';
-    }
+    if (pp.close < pp.open && bodyP < bodyPP * 0.3 && c.close > c.open && bodyC > bodyPP * 0.5) { bullish = true; pattern = 'Morning Star'; }
+    if (pp.close > pp.open && bodyP < bodyPP * 0.3 && c.close < c.open && bodyC > bodyPP * 0.5) { bearish = true; pattern = 'Evening Star'; }
   }
 
   return { bullish, bearish, pattern };
 }
 
-// Condition C: Volume Spike
 function detectVolumeSpike(volumes: number[], lookback = 20): boolean {
   const last = volumes.length - 1;
   const avgVol = volumes.slice(Math.max(0, last - lookback), last).reduce((a, b) => a + b, 0) / lookback;
   return volumes[last] > avgVol * 1.5;
 }
 
-// Condition E: Price outside 2nd StdDev of BB
 function priceOutsideBB2(price: number, bbUpper: number, bbLower: number): { outside: boolean; side: 'above' | 'below' | 'inside' } {
   if (price > bbUpper) return { outside: true, side: 'above' };
   if (price < bbLower) return { outside: true, side: 'below' };
@@ -238,18 +142,16 @@ function priceOutsideBB2(price: number, bbUpper: number, bbLower: number): { out
 function isChopZone(price: number, ema50Val: number, ema200Val: number): boolean {
   const midpoint = (ema50Val + ema200Val) / 2;
   const range = Math.abs(ema50Val - ema200Val);
-  // Price within 20% of the midpoint of the EMA gap
   return range > 0 && Math.abs(price - midpoint) < range * 0.2;
 }
 
 function isLowVolumeEnvironment(volumes: number[], lookback = 50): boolean {
   const last = volumes.length - 1;
   const avgVol = volumes.slice(Math.max(0, last - lookback), last).reduce((a, b) => a + b, 0) / lookback;
-  // Volume less than 40% of average = dead market
   return volumes[last] < avgVol * 0.4;
 }
 
-// ========== MAIN ANALYSIS ==========
+// ========== MAIN ANALYSIS (uses shared indicators) ==========
 function analyzeMarket(klines: Kline[]) {
   const closes = klines.map(k => k.close);
   const highs = klines.map(k => k.high);
@@ -258,20 +160,15 @@ function analyzeMarket(klines: Kline[]) {
   const last = closes.length - 1;
   const price = closes[last];
 
-  const ema20 = ema(closes, 20);
-  const ema50 = ema(closes, 50);
-  const ema200 = ema(closes, 200);
-  const rsiVals = rsi(closes);
-  const macdData = macd(closes);
-  const bb = bollingerBands(closes);
-  const atrVals = atr(highs, lows, closes);
+  // Use the shared dashboard indicators
+  const ind = calculateAllIndicators(closes, highs, lows, volumes);
 
-  const lastRsi = rsiVals[last];
-  const lastAtr = atrVals[last];
+  const lastRsi = ind.rsi[last];
+  const lastAtr = ind.atr[last];
   const reasoning: string[] = [];
 
   // ===== STEP 1: NO-TRADE ZONES =====
-  const chopZone = isChopZone(price, ema50[last], ema200[last]);
+  const chopZone = isChopZone(price, ind.ema50[last], ind.ema200[last]);
   const lowVolume = isLowVolumeEnvironment(volumes);
 
   if (chopZone) reasoning.push('🚫 CHOP ZONE: price between EMA50/200 midpoint');
@@ -284,15 +181,16 @@ function analyzeMarket(klines: Kline[]) {
       bullKeys: 0,
       bearKeys: 0,
       rsi: lastRsi,
-      macdHist: macdData.hist[last],
-      ema50: ema50[last],
-      ema200: ema200[last],
+      macdHist: ind.macd.histogram[last],
+      ema50: ind.ema50[last],
+      ema200: ind.ema200[last],
       bbPosition: 0.5,
       price,
       atr: lastAtr,
       reasoning: reasoning.join(' | '),
       entryAllowed: false,
       skipReason: chopZone ? 'Chop Zone — no trend' : 'Low volume — dead market',
+      indicators: ind,
     };
   }
 
@@ -309,12 +207,11 @@ function analyzeMarket(klines: Kline[]) {
     shortContext = true;
     contextReasons.push(sr.failedBreakout ? 'Failed breakout at Resistance ↓' : 'Price near Resistance Zone ↓');
   }
-  // Also allow based on major trend
-  if (price > ema200[last] && ema50[last] > ema200[last]) {
+  if (price > ind.ema200[last] && ind.ema50[last] > ind.ema200[last]) {
     longContext = true;
     contextReasons.push('Above EMA200 + bullish structure ↑');
   }
-  if (price < ema200[last] && ema50[last] < ema200[last]) {
+  if (price < ind.ema200[last] && ind.ema50[last] < ind.ema200[last]) {
     shortContext = true;
     contextReasons.push('Below EMA200 + bearish structure ↓');
   }
@@ -322,40 +219,33 @@ function analyzeMarket(klines: Kline[]) {
   reasoning.push(`Context: ${contextReasons.join(', ') || 'No context'}`);
 
   // ===== STEP 3: THREE-KEY ENTRY SYSTEM (need 3/5) =====
-  const rsiDiv = detectRSIDivergence(closes, rsiVals);
+  const rsiDiv = detectRSIDivergence(closes, ind.rsi);
   const candles = detectCandlestickPatterns(klines);
   const volumeSpike = detectVolumeSpike(volumes);
-  const prevMacdAbove = macdData.line[last-1] > macdData.signal[last-1];
-  const currMacdAbove = macdData.line[last] > macdData.signal[last];
+  const prevMacdAbove = ind.macd.macdLine[last-1] > ind.macd.signalLine[last-1];
+  const currMacdAbove = ind.macd.macdLine[last] > ind.macd.signalLine[last];
   const macdCrossoverBull = !prevMacdAbove && currMacdAbove;
   const macdCrossoverBear = prevMacdAbove && !currMacdAbove;
-  const bbCheck = priceOutsideBB2(price, bb.upper[last], bb.lower[last]);
+  const bbCheck = priceOutsideBB2(price, ind.bollingerBands.upper[last], ind.bollingerBands.lower[last]);
 
-  // Count bullish conditions
   let bullKeys = 0, bearKeys = 0;
   const bullConditions: string[] = [], bearConditions: string[] = [];
 
-  // A: RSI Divergence
   if (rsiDiv.bullish) { bullKeys++; bullConditions.push('RSI Divergence ↑'); }
   if (rsiDiv.bearish) { bearKeys++; bearConditions.push('RSI Divergence ↓'); }
 
-  // B: Candlestick Pattern
   if (candles.bullish) { bullKeys++; bullConditions.push(`${candles.pattern} ↑`); }
   if (candles.bearish) { bearKeys++; bearConditions.push(`${candles.pattern} ↓`); }
 
-  // C: Volume Spike
   if (volumeSpike) {
-    // Volume spike confirms the direction of current candle
     const lastCandle = klines[last];
     if (lastCandle.close > lastCandle.open) { bullKeys++; bullConditions.push('Volume Spike (bullish) ↑'); }
     else { bearKeys++; bearConditions.push('Volume Spike (bearish) ↓'); }
   }
 
-  // D: MACD Crossover
   if (macdCrossoverBull) { bullKeys++; bullConditions.push('MACD Bullish Cross ↑'); }
   if (macdCrossoverBear) { bearKeys++; bearConditions.push('MACD Bearish Cross ↓'); }
 
-  // E: Price outside 2nd StdDev BB (mean reversion)
   if (bbCheck.outside) {
     if (bbCheck.side === 'below') { bullKeys++; bullConditions.push('Below BB Lower (mean reversion) ↑'); }
     if (bbCheck.side === 'above') { bearKeys++; bearConditions.push('Above BB Upper (mean reversion) ↓'); }
@@ -364,7 +254,6 @@ function analyzeMarket(klines: Kline[]) {
   reasoning.push(`Bull keys: ${bullKeys}/5 [${bullConditions.join(', ') || 'none'}]`);
   reasoning.push(`Bear keys: ${bearKeys}/5 [${bearConditions.join(', ') || 'none'}]`);
 
-  // Determine bias
   const REQUIRED_KEYS = 3;
   let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
   let entryAllowed = false;
@@ -388,7 +277,6 @@ function analyzeMarket(klines: Kline[]) {
     }
   }
 
-  // RSI guardrails on top
   if (bias === 'bullish' && lastRsi > 75) {
     bias = 'neutral'; entryAllowed = false;
     skipReason = '⚠ RSI guardrail: RSI > 75, blocking long';
@@ -401,7 +289,6 @@ function analyzeMarket(klines: Kline[]) {
   if (skipReason) reasoning.push(skipReason);
   if (entryAllowed) reasoning.push(`✅ ENTRY ALLOWED: ${bias.toUpperCase()} — ${bias === 'bullish' ? bullConditions.join(' + ') : bearConditions.join(' + ')}`);
 
-  // Legacy score for compatibility
   const score = bias === 'bullish' ? 0.5 : bias === 'bearish' ? -0.5 : 0;
 
   return {
@@ -410,10 +297,12 @@ function analyzeMarket(klines: Kline[]) {
     bullKeys,
     bearKeys,
     rsi: lastRsi,
-    macdHist: macdData.hist[last],
-    ema50: ema50[last],
-    ema200: ema200[last],
-    bbPosition: bb.upper[last] && bb.lower[last] ? (price - bb.lower[last]) / (bb.upper[last] - bb.lower[last]) : 0.5,
+    macdHist: ind.macd.histogram[last],
+    ema50: ind.ema50[last],
+    ema200: ind.ema200[last],
+    bbPosition: ind.bollingerBands.upper[last] && ind.bollingerBands.lower[last]
+      ? (price - ind.bollingerBands.lower[last]) / (ind.bollingerBands.upper[last] - ind.bollingerBands.lower[last])
+      : 0.5,
     price,
     atr: lastAtr,
     reasoning: reasoning.join(' | '),
@@ -421,16 +310,13 @@ function analyzeMarket(klines: Kline[]) {
     skipReason,
     context: { longContext, shortContext, ...sr },
     conditions: { rsiDiv, candles, volumeSpike, macdCrossoverBull, macdCrossoverBear, bbCheck },
+    indicators: ind,
   };
 }
 
 // ========== RISK-REWARD VALIDATION ==========
 function validateRiskReward(
-  side: string,
-  entryPrice: number,
-  stopLoss: number,
-  takeProfit: number,
-  minRatio = 2
+  side: string, entryPrice: number, stopLoss: number, takeProfit: number, minRatio = 2
 ): { valid: boolean; ratio: number; reason: string } {
   const risk = Math.abs(entryPrice - stopLoss);
   const reward = Math.abs(takeProfit - entryPrice);
@@ -438,8 +324,7 @@ function validateRiskReward(
   const ratio = reward / risk;
   const valid = ratio >= minRatio;
   return {
-    valid,
-    ratio,
+    valid, ratio,
     reason: valid
       ? `R:R ${ratio.toFixed(2)}:1 ✅ (min ${minRatio}:1)`
       : `R:R ${ratio.toFixed(2)}:1 ❌ — below ${minRatio}:1 minimum, trade discarded`,
@@ -527,7 +412,6 @@ serve(async (req) => {
       }
     }
 
-    // If not active and no special action, return status
     if (!config.is_active && action !== 'run') {
       const { data: positions } = await supabase.from('bot_positions')
         .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
@@ -543,13 +427,10 @@ serve(async (req) => {
     // === TRADING LOGIC ===
     const klines = await fetchKlines(config.symbol, config.interval, 300);
     const closes = klines.map(k => k.close);
-    const highs = klines.map(k => k.high);
-    const lows = klines.map(k => k.low);
     const currentPrice = closes[closes.length - 1];
 
     const analysis = analyzeMarket(klines);
 
-    // Check open positions — smart management
     const { data: openPositions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).eq('status', 'open');
 
@@ -623,31 +504,24 @@ serve(async (req) => {
       }
 
       // 4. ATR-based Trailing Stop Loss
-      // Stage 1: At 1% profit → move SL to break-even
-      // Stage 2: Every further 0.5% gain → trail SL behind price by 1.5x ATR
       const currentAtr = analysis.atr || 0;
       let newSL = currentSL;
-      const profitPctRaw = pnlPct; // already leverage-adjusted
+      const profitPctRaw = pnlPct;
 
       if (profitPctRaw >= 1) {
         if (pos.side === 'long') {
-          // Break-even floor
           const breakEvenSL = entryPrice;
-          // ATR trail: every 0.5% above 1%, tighten SL
           const trailingSteps = Math.floor((profitPctRaw - 1) / 0.5);
           const atrTrailSL = trailingSteps > 0
             ? currentPrice - (1.5 * currentAtr)
             : breakEvenSL;
-          // SL = max of (current SL, break-even, ATR trail) — never move SL down
           newSL = Math.max(currentSL, breakEvenSL, atrTrailSL);
         } else {
-          // Short: break-even floor
           const breakEvenSL = entryPrice;
           const trailingSteps = Math.floor((profitPctRaw - 1) / 0.5);
           const atrTrailSL = trailingSteps > 0
             ? currentPrice + (1.5 * currentAtr)
             : breakEvenSL;
-          // SL = min of (current SL, break-even, ATR trail) — never move SL up (for short)
           newSL = Math.min(currentSL, breakEvenSL, atrTrailSL);
         }
       }
@@ -729,9 +603,7 @@ serve(async (req) => {
           ? currentPrice * (1 + tpPct / leverage)
           : currentPrice * (1 - tpPct / leverage);
 
-        // ===== STEP 4: RISK-REWARD VALIDATION =====
         const rr = validateRiskReward(side, currentPrice, stopLoss, takeProfit);
-        reasoning_log: analysis.reasoning;
 
         if (!rr.valid) {
           await logBot(supabase, config.id, 'info',
@@ -766,19 +638,16 @@ serve(async (req) => {
         }
       }
     } else if (!analysis.entryAllowed && (!remainingOpen || remainingOpen.length === 0)) {
-      // Log why we're not trading
       await logBot(supabase, config.id, 'info',
         `⏸ NO TRADE: ${analysis.skipReason || 'Conditions not met'}`);
     }
 
-    // Update balance
     await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
 
     await logBot(supabase, config.id, 'info',
       `Tick: $${currentPrice.toFixed(2)} | Bias: ${analysis.bias} | BullKeys: ${analysis.bullKeys}/5 BearKeys: ${analysis.bearKeys}/5 | RSI: ${analysis.rsi.toFixed(1)} | Bal: $${balance.toFixed(2)}`,
       { reasoning: analysis.reasoning });
 
-    // Return state
     const { data: positions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
     const { data: trades } = await supabase.from('bot_trades')
