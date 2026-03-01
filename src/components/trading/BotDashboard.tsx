@@ -73,7 +73,7 @@ export default function BotDashboard() {
       } catch (e) { /* ignore */ }
     };
     fetchPrice();
-    const iv = setInterval(fetchPrice, 10000);
+    const iv = setInterval(fetchPrice, 2000);
     return () => clearInterval(iv);
   }, []);
 
