@@ -1,15 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import {
-  calculateEMA,
-  calculateSMA,
-  calculateRSI,
-  calculateMACD,
-  calculateBollingerBands,
-  calculateATR,
-  calculateAllIndicators,
-  type IndicatorResults,
-} from "../_shared/indicators.ts";
+import { calculateAllIndicators } from "../_shared/indicators.ts";
+import { analyzeSignals, type SignalAnalysis } from "../_shared/signals.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -36,108 +28,6 @@ async function fetchCurrentPrice(symbol: string): Promise<number> {
   return parseFloat(data.price);
 }
 
-// ========== CONTEXT FILTER: Support/Resistance ==========
-function findSupportResistance(highs: number[], lows: number[], closes: number[], lookback = 50) {
-  const last = closes.length - 1;
-  const price = closes[last];
-  const recentLows = lows.slice(Math.max(0, last - lookback), last + 1);
-  const recentHighs = highs.slice(Math.max(0, last - lookback), last + 1);
-
-  const supports: number[] = [];
-  for (let i = 2; i < recentLows.length - 2; i++) {
-    if (recentLows[i] < recentLows[i-1] && recentLows[i] < recentLows[i-2] &&
-        recentLows[i] < recentLows[i+1] && recentLows[i] < recentLows[i+2]) {
-      supports.push(recentLows[i]);
-    }
-  }
-
-  const resistances: number[] = [];
-  for (let i = 2; i < recentHighs.length - 2; i++) {
-    if (recentHighs[i] > recentHighs[i-1] && recentHighs[i] > recentHighs[i-2] &&
-        recentHighs[i] > recentHighs[i+1] && recentHighs[i] > recentHighs[i+2]) {
-      resistances.push(recentHighs[i]);
-    }
-  }
-
-  let doubleBottom = false;
-  const tolerance = price * 0.005;
-  for (let i = 0; i < supports.length - 1; i++) {
-    if (Math.abs(supports[i] - supports[i+1]) < tolerance && price > supports[i]) {
-      doubleBottom = true;
-      break;
-    }
-  }
-
-  let failedBreakout = false;
-  if (resistances.length > 0) {
-    const nearestResistance = resistances.reduce((a, b) =>
-      Math.abs(a - price) < Math.abs(b - price) ? a : b);
-    const recentHigh = Math.max(...highs.slice(Math.max(0, last - 5), last + 1));
-    if (recentHigh >= nearestResistance * 0.997 && price < nearestResistance) {
-      failedBreakout = true;
-    }
-  }
-
-  const nearSupport = supports.some(s => price >= s * 0.995 && price <= s * 1.01);
-  const nearResistance = resistances.some(r => price >= r * 0.99 && price <= r * 1.005);
-
-  return { supports, resistances, doubleBottom, failedBreakout, nearSupport, nearResistance };
-}
-
-// ========== THREE-KEY ENTRY CONDITIONS ==========
-
-function detectRSIDivergence(closes: number[], rsiVals: number[], lookback = 20): { bullish: boolean; bearish: boolean } {
-  const last = closes.length - 1;
-  const start = Math.max(0, last - lookback);
-  let bullishDiv = false, bearishDiv = false;
-  for (let i = start + 2; i < last - 1; i++) {
-    if (closes[last] < closes[i] && rsiVals[last] > rsiVals[i] && rsiVals[i] < 40) bullishDiv = true;
-    if (closes[last] > closes[i] && rsiVals[last] < rsiVals[i] && rsiVals[i] > 60) bearishDiv = true;
-  }
-  return { bullish: bullishDiv, bearish: bearishDiv };
-}
-
-function detectCandlestickPatterns(klines: Kline[]): { bullish: boolean; bearish: boolean; pattern: string } {
-  const last = klines.length - 1;
-  const c = klines[last], p = klines[last - 1], pp = klines[last - 2];
-  const bodyC = Math.abs(c.close - c.open);
-  const rangeC = c.high - c.low;
-  const bodyP = Math.abs(p.close - p.open);
-  let bullish = false, bearish = false, pattern = '';
-
-  if (rangeC > 0) {
-    const lowerWick = Math.min(c.open, c.close) - c.low;
-    const upperWick = c.high - Math.max(c.open, c.close);
-    if (lowerWick > bodyC * 2 && upperWick < bodyC * 0.5) { bullish = true; pattern = 'Hammer'; }
-    if (upperWick > bodyC * 2 && lowerWick < bodyC * 0.5) { bearish = true; pattern = 'Shooting Star'; }
-  }
-
-  if (!bullish && !bearish && bodyP > 0) {
-    if (p.close < p.open && c.close > c.open && c.close > p.open && c.open < p.close) { bullish = true; pattern = 'Bullish Engulfing'; }
-    if (p.close > p.open && c.close < c.open && c.close < p.open && c.open > p.close) { bearish = true; pattern = 'Bearish Engulfing'; }
-  }
-
-  if (!bullish && !bearish) {
-    const bodyPP = Math.abs(pp.close - pp.open);
-    if (pp.close < pp.open && bodyP < bodyPP * 0.3 && c.close > c.open && bodyC > bodyPP * 0.5) { bullish = true; pattern = 'Morning Star'; }
-    if (pp.close > pp.open && bodyP < bodyPP * 0.3 && c.close < c.open && bodyC > bodyPP * 0.5) { bearish = true; pattern = 'Evening Star'; }
-  }
-
-  return { bullish, bearish, pattern };
-}
-
-function detectVolumeSpike(volumes: number[], lookback = 20): boolean {
-  const last = volumes.length - 1;
-  const avgVol = volumes.slice(Math.max(0, last - lookback), last).reduce((a, b) => a + b, 0) / lookback;
-  return volumes[last] > avgVol * 1.5;
-}
-
-function priceOutsideBB2(price: number, bbUpper: number, bbLower: number): { outside: boolean; side: 'above' | 'below' | 'inside' } {
-  if (price > bbUpper) return { outside: true, side: 'above' };
-  if (price < bbLower) return { outside: true, side: 'below' };
-  return { outside: false, side: 'inside' };
-}
-
 // ========== NO-TRADE ZONE CHECKS ==========
 function isChopZone(price: number, ema50Val: number, ema200Val: number): boolean {
   const midpoint = (ema50Val + ema200Val) / 2;
@@ -151,8 +41,28 @@ function isLowVolumeEnvironment(volumes: number[], lookback = 50): boolean {
   return volumes[last] < avgVol * 0.4;
 }
 
-// ========== MAIN ANALYSIS (uses shared indicators) ==========
-function analyzeMarket(klines: Kline[]) {
+// ========== MAIN ANALYSIS — uses dashboard's analyzeSignals ==========
+interface MarketAnalysis {
+  bias: 'bullish' | 'bearish' | 'neutral';
+  score: number;
+  bullSignals: number;
+  bearSignals: number;
+  totalSignals: number;
+  confidence: number;
+  rsi: number;
+  macdHist: number;
+  ema50: number;
+  ema200: number;
+  bbPosition: number;
+  price: number;
+  atr: number;
+  reasoning: string;
+  entryAllowed: boolean;
+  skipReason: string;
+  signalAnalysis: SignalAnalysis;
+}
+
+function analyzeMarket(klines: Kline[]): MarketAnalysis {
   const closes = klines.map(k => k.close);
   const highs = klines.map(k => k.high);
   const lows = klines.map(k => k.low);
@@ -160,8 +70,11 @@ function analyzeMarket(klines: Kline[]) {
   const last = closes.length - 1;
   const price = closes[last];
 
-  // Use the shared dashboard indicators
+  // Use the SAME indicators as the dashboard
   const ind = calculateAllIndicators(closes, highs, lows, volumes);
+
+  // Use the SAME signal analysis as the dashboard
+  const sa = analyzeSignals(ind, closes);
 
   const lastRsi = ind.rsi[last];
   const lastAtr = ind.atr[last];
@@ -176,10 +89,12 @@ function analyzeMarket(klines: Kline[]) {
 
   if (chopZone || lowVolume) {
     return {
-      bias: 'neutral' as const,
+      bias: 'neutral',
       score: 0,
-      bullKeys: 0,
-      bearKeys: 0,
+      bullSignals: sa.bullish,
+      bearSignals: sa.bearish,
+      totalSignals: sa.total,
+      confidence: sa.confidence,
       rsi: lastRsi,
       macdHist: ind.macd.histogram[last],
       ema50: ind.ema50[last],
@@ -190,127 +105,77 @@ function analyzeMarket(klines: Kline[]) {
       reasoning: reasoning.join(' | '),
       entryAllowed: false,
       skipReason: chopZone ? 'Chop Zone — no trend' : 'Low volume — dead market',
-      indicators: ind,
+      signalAnalysis: sa,
     };
   }
 
-  // ===== STEP 2: CONTEXT FILTER (Support/Resistance) =====
-  const sr = findSupportResistance(highs, lows, closes);
-  let longContext = false, shortContext = false;
-  const contextReasons: string[] = [];
+  // ===== STEP 2: DASHBOARD SIGNAL ANALYSIS =====
+  // The dashboard evaluates 11 indicators and produces a bias + confidence
+  // We use that directly for trade decisions
 
-  if (sr.nearSupport || sr.doubleBottom) {
-    longContext = true;
-    contextReasons.push(sr.doubleBottom ? 'Double Bottom detected ↑' : 'Price near Support Zone ↑');
-  }
-  if (sr.nearResistance || sr.failedBreakout) {
-    shortContext = true;
-    contextReasons.push(sr.failedBreakout ? 'Failed breakout at Resistance ↓' : 'Price near Resistance Zone ↓');
-  }
-  if (price > ind.ema200[last] && ind.ema50[last] > ind.ema200[last]) {
-    longContext = true;
-    contextReasons.push('Above EMA200 + bullish structure ↑');
-  }
-  if (price < ind.ema200[last] && ind.ema50[last] < ind.ema200[last]) {
-    shortContext = true;
-    contextReasons.push('Below EMA200 + bearish structure ↓');
-  }
+  const buySignals = sa.signals.filter(s => s.signal === 'buy');
+  const sellSignals = sa.signals.filter(s => s.signal === 'sell');
 
-  reasoning.push(`Context: ${contextReasons.join(', ') || 'No context'}`);
+  reasoning.push(`Dashboard: ${sa.bias} (${sa.confidence}% confidence)`);
+  reasoning.push(`Buy: ${sa.bullish}/${sa.total} [${buySignals.map(s => s.name).join(', ') || 'none'}]`);
+  reasoning.push(`Sell: ${sa.bearish}/${sa.total} [${sellSignals.map(s => s.name).join(', ') || 'none'}]`);
 
-  // ===== STEP 3: THREE-KEY ENTRY SYSTEM (need 3/5) =====
-  const rsiDiv = detectRSIDivergence(closes, ind.rsi);
-  const candles = detectCandlestickPatterns(klines);
-  const volumeSpike = detectVolumeSpike(volumes);
-  const prevMacdAbove = ind.macd.macdLine[last-1] > ind.macd.signalLine[last-1];
-  const currMacdAbove = ind.macd.macdLine[last] > ind.macd.signalLine[last];
-  const macdCrossoverBull = !prevMacdAbove && currMacdAbove;
-  const macdCrossoverBear = prevMacdAbove && !currMacdAbove;
-  const bbCheck = priceOutsideBB2(price, ind.bollingerBands.upper[last], ind.bollingerBands.lower[last]);
-
-  let bullKeys = 0, bearKeys = 0;
-  const bullConditions: string[] = [], bearConditions: string[] = [];
-
-  if (rsiDiv.bullish) { bullKeys++; bullConditions.push('RSI Divergence ↑'); }
-  if (rsiDiv.bearish) { bearKeys++; bearConditions.push('RSI Divergence ↓'); }
-
-  if (candles.bullish) { bullKeys++; bullConditions.push(`${candles.pattern} ↑`); }
-  if (candles.bearish) { bearKeys++; bearConditions.push(`${candles.pattern} ↓`); }
-
-  if (volumeSpike) {
-    const lastCandle = klines[last];
-    if (lastCandle.close > lastCandle.open) { bullKeys++; bullConditions.push('Volume Spike (bullish) ↑'); }
-    else { bearKeys++; bearConditions.push('Volume Spike (bearish) ↓'); }
-  }
-
-  if (macdCrossoverBull) { bullKeys++; bullConditions.push('MACD Bullish Cross ↑'); }
-  if (macdCrossoverBear) { bearKeys++; bearConditions.push('MACD Bearish Cross ↓'); }
-
-  if (bbCheck.outside) {
-    if (bbCheck.side === 'below') { bullKeys++; bullConditions.push('Below BB Lower (mean reversion) ↑'); }
-    if (bbCheck.side === 'above') { bearKeys++; bearConditions.push('Above BB Upper (mean reversion) ↓'); }
-  }
-
-  reasoning.push(`Bull keys: ${bullKeys}/5 [${bullConditions.join(', ') || 'none'}]`);
-  reasoning.push(`Bear keys: ${bearKeys}/5 [${bearConditions.join(', ') || 'none'}]`);
-
-  const REQUIRED_KEYS = 3;
+  // Entry requires: majority of indicators agree AND confidence >= 50%
+  const REQUIRED_MAJORITY = Math.ceil(sa.total / 2); // need more than half
   let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
   let entryAllowed = false;
   let skipReason = '';
 
-  if (bullKeys >= REQUIRED_KEYS && longContext) {
+  if (sa.bias === 'Bullish' && sa.bullish >= REQUIRED_MAJORITY && sa.confidence >= 50) {
     bias = 'bullish';
     entryAllowed = true;
-  } else if (bearKeys >= REQUIRED_KEYS && shortContext) {
+  } else if (sa.bias === 'Bearish' && sa.bearish >= REQUIRED_MAJORITY && sa.confidence >= 50) {
     bias = 'bearish';
     entryAllowed = true;
   } else {
-    if (bullKeys >= REQUIRED_KEYS && !longContext) {
-      skipReason = `Trade skipped: ${bullKeys}/5 bullish keys met BUT no long context (no support/double bottom)`;
-    } else if (bearKeys >= REQUIRED_KEYS && !shortContext) {
-      skipReason = `Trade skipped: ${bearKeys}/5 bearish keys met BUT no short context (no resistance/failed breakout)`;
-    } else {
-      const maxKeys = Math.max(bullKeys, bearKeys);
-      const direction = bullKeys > bearKeys ? 'bullish' : 'bearish';
-      skipReason = `Trade skipped: Only ${maxKeys}/5 ${direction} conditions met (need ${REQUIRED_KEYS})`;
-    }
+    const maxSide = sa.bullish > sa.bearish ? 'bullish' : 'bearish';
+    const maxCount = Math.max(sa.bullish, sa.bearish);
+    skipReason = `Only ${maxCount}/${sa.total} ${maxSide} signals (need ${REQUIRED_MAJORITY}, conf: ${sa.confidence}%)`;
   }
 
+  // RSI guardrails
   if (bias === 'bullish' && lastRsi > 75) {
     bias = 'neutral'; entryAllowed = false;
-    skipReason = '⚠ RSI guardrail: RSI > 75, blocking long';
+    skipReason = `⚠ RSI guardrail: RSI ${lastRsi.toFixed(1)} > 75, blocking long`;
   }
   if (bias === 'bearish' && lastRsi < 25) {
     bias = 'neutral'; entryAllowed = false;
-    skipReason = '⚠ RSI guardrail: RSI < 25, blocking short';
+    skipReason = `⚠ RSI guardrail: RSI ${lastRsi.toFixed(1)} < 25, blocking short`;
   }
 
   if (skipReason) reasoning.push(skipReason);
-  if (entryAllowed) reasoning.push(`✅ ENTRY ALLOWED: ${bias.toUpperCase()} — ${bias === 'bullish' ? bullConditions.join(' + ') : bearConditions.join(' + ')}`);
+  if (entryAllowed) {
+    const activeSignals = bias === 'bullish' ? buySignals : sellSignals;
+    reasoning.push(`✅ ENTRY: ${bias.toUpperCase()} — ${activeSignals.map(s => s.name).join(' + ')}`);
+  }
 
-  const score = bias === 'bullish' ? 0.5 : bias === 'bearish' ? -0.5 : 0;
+  const bbUp = ind.bollingerBands.upper[last];
+  const bbLow = ind.bollingerBands.lower[last];
 
   return {
     bias,
-    score,
-    bullKeys,
-    bearKeys,
+    score: bias === 'bullish' ? 0.5 : bias === 'bearish' ? -0.5 : 0,
+    bullSignals: sa.bullish,
+    bearSignals: sa.bearish,
+    totalSignals: sa.total,
+    confidence: sa.confidence,
     rsi: lastRsi,
     macdHist: ind.macd.histogram[last],
     ema50: ind.ema50[last],
     ema200: ind.ema200[last],
-    bbPosition: ind.bollingerBands.upper[last] && ind.bollingerBands.lower[last]
-      ? (price - ind.bollingerBands.lower[last]) / (ind.bollingerBands.upper[last] - ind.bollingerBands.lower[last])
-      : 0.5,
+    bbPosition: (!isNaN(bbUp) && !isNaN(bbLow) && bbUp !== bbLow)
+      ? (price - bbLow) / (bbUp - bbLow) : 0.5,
     price,
     atr: lastAtr,
     reasoning: reasoning.join(' | '),
     entryAllowed,
     skipReason,
-    context: { longContext, shortContext, ...sr },
-    conditions: { rsiDiv, candles, volumeSpike, macdCrossoverBull, macdCrossoverBear, bbCheck },
-    indicators: ind,
+    signalAnalysis: sa,
   };
 }
 
@@ -327,7 +192,7 @@ function validateRiskReward(
     valid, ratio,
     reason: valid
       ? `R:R ${ratio.toFixed(2)}:1 ✅ (min ${minRatio}:1)`
-      : `R:R ${ratio.toFixed(2)}:1 ❌ — below ${minRatio}:1 minimum, trade discarded`,
+      : `R:R ${ratio.toFixed(2)}:1 ❌ — below ${minRatio}:1 minimum`,
   };
 }
 
@@ -611,11 +476,15 @@ serve(async (req) => {
         } else {
           balance -= margin;
 
+          const activeSignals = side === 'long'
+            ? analysis.signalAnalysis.signals.filter(s => s.signal === 'buy').map(s => s.name)
+            : analysis.signalAnalysis.signals.filter(s => s.signal === 'sell').map(s => s.name);
+
           const entryReason = [
-            `${side.toUpperCase()} — Triple Confirmation`,
+            `${side.toUpperCase()} — Dashboard Signals (${analysis.confidence}%)`,
             rr.reason,
-            `Keys: ${side === 'long' ? analysis.bullKeys : analysis.bearKeys}/5`,
-            analysis.reasoning,
+            `Signals: ${activeSignals.join(', ')}`,
+            `${analysis.bullSignals} buy / ${analysis.bearSignals} sell / ${analysis.totalSignals} total`,
           ].join(' | ');
 
           const { data: newPos } = await supabase.from('bot_positions').insert({
@@ -645,7 +514,7 @@ serve(async (req) => {
     await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
 
     await logBot(supabase, config.id, 'info',
-      `Tick: $${currentPrice.toFixed(2)} | Bias: ${analysis.bias} | BullKeys: ${analysis.bullKeys}/5 BearKeys: ${analysis.bearKeys}/5 | RSI: ${analysis.rsi.toFixed(1)} | Bal: $${balance.toFixed(2)}`,
+      `Tick: $${currentPrice.toFixed(2)} | Bias: ${analysis.bias} | Buy: ${analysis.bullSignals}/${analysis.totalSignals} Sell: ${analysis.bearSignals}/${analysis.totalSignals} | Conf: ${analysis.confidence}% | RSI: ${analysis.rsi.toFixed(1)} | Bal: $${balance.toFixed(2)}`,
       { reasoning: analysis.reasoning });
 
     const { data: positions } = await supabase.from('bot_positions')
