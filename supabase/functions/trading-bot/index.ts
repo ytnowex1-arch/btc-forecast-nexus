@@ -121,7 +121,7 @@ function analyzeMarket(klines: Kline[]): MarketAnalysis {
   reasoning.push(`Sell: ${sa.bearish}/${sa.total} [${sellSignals.map(s => s.name).join(', ') || 'none'}]`);
 
   // Entry requires: majority of indicators agree AND confidence >= 50%
-  const REQUIRED_MAJORITY = Math.ceil(sa.total / 2); // need more than half
+  const REQUIRED_MAJORITY = 5; // 5 out of 11 indicators must agree
   let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
   let entryAllowed = false;
   let skipReason = '';
