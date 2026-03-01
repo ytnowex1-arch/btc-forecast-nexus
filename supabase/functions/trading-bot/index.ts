@@ -120,16 +120,16 @@ function analyzeMarket(klines: Kline[]): MarketAnalysis {
   reasoning.push(`Buy: ${sa.bullish}/${sa.total} [${buySignals.map(s => s.name).join(', ') || 'none'}]`);
   reasoning.push(`Sell: ${sa.bearish}/${sa.total} [${sellSignals.map(s => s.name).join(', ') || 'none'}]`);
 
-  // Entry requires: majority of indicators agree AND confidence >= 50%
+  // Entry requires: majority of indicators agree AND confidence >= 45%
   const REQUIRED_MAJORITY = 5; // 5 out of 11 indicators must agree
   let bias: 'bullish' | 'bearish' | 'neutral' = 'neutral';
   let entryAllowed = false;
   let skipReason = '';
 
-  if (sa.bias === 'Bullish' && sa.bullish >= REQUIRED_MAJORITY && sa.confidence >= 50) {
+  if (sa.bias === 'Bullish' && sa.bullish >= REQUIRED_MAJORITY && sa.confidence >= 45) {
     bias = 'bullish';
     entryAllowed = true;
-  } else if (sa.bias === 'Bearish' && sa.bearish >= REQUIRED_MAJORITY && sa.confidence >= 50) {
+  } else if (sa.bias === 'Bearish' && sa.bearish >= REQUIRED_MAJORITY && sa.confidence >= 45) {
     bias = 'bearish';
     entryAllowed = true;
   } else {
