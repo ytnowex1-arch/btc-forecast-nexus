@@ -450,7 +450,7 @@ serve(async (req) => {
 
     if ((!remainingOpen || remainingOpen.length === 0) && analysis.entryAllowed) {
       const positionSizePct = Number(config.position_size_pct) / 100;
-      const margin = balance * positionSizePct;
+      let margin = balance * positionSizePct;
 
       // Cooldown: skip if last position was a stop loss within last 3 candles
       const { data: recentClosed } = await supabase.from('bot_positions')
