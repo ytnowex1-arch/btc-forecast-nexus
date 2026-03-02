@@ -452,21 +452,45 @@ serve(async (req) => {
       const positionSizePct = Number(config.position_size_pct) / 100;
       const margin = balance * positionSizePct;
 
+      // Cooldown: skip if last position was a stop loss within last 3 candles
+      const { data: recentClosed } = await supabase.from('bot_positions')
+        .select('closed_at, exit_reason')
+        .eq('bot_config_id', config.id)
+        .eq('status', 'closed')
+        .order('closed_at', { ascending: false })
+        .limit(1);
+      
+      const lastClosed = recentClosed?.[0];
+      if (lastClosed?.exit_reason === 'Stop Loss' && lastClosed.closed_at) {
+        const cooldownMs = config.interval === '5m' ? 15 * 60000 
+          : config.interval === '15m' ? 45 * 60000 
+          : config.interval === '1h' ? 3 * 3600000 
+          : 3 * 3600000;
+        const timeSinceSL = Date.now() - new Date(lastClosed.closed_at).getTime();
+        if (timeSinceSL < cooldownMs) {
+          await logBot(supabase, config.id, 'info',
+            `⏳ COOLDOWN: ${Math.round((cooldownMs - timeSinceSL) / 60000)}min remaining after Stop Loss`);
+          margin = 0; // skip entry
+        }
+      }
+
       if (margin > 10 && balance > margin) {
         const leverage = Number(config.leverage);
         const notional = margin * leverage;
         const quantity = notional / currentPrice;
         const side = analysis.bias === 'bullish' ? 'long' : 'short';
 
-        const slPct = Number(config.stop_loss_pct) / 100;
-        const tpPct = Number(config.take_profit_pct) / 100;
+        // ATR-based SL/TP — adapts to actual market volatility
+        const atrMultiplierSL = 2.0;  // 2x ATR for stop loss
+        const atrMultiplierTP = 4.0;  // 4x ATR for take profit (2:1 R:R)
+        const atrValue = analysis.atr || currentPrice * 0.01; // fallback 1%
 
         const stopLoss = side === 'long'
-          ? currentPrice * (1 - slPct / leverage)
-          : currentPrice * (1 + slPct / leverage);
+          ? currentPrice - (atrValue * atrMultiplierSL)
+          : currentPrice + (atrValue * atrMultiplierSL);
         const takeProfit = side === 'long'
-          ? currentPrice * (1 + tpPct / leverage)
-          : currentPrice * (1 - tpPct / leverage);
+          ? currentPrice + (atrValue * atrMultiplierTP)
+          : currentPrice - (atrValue * atrMultiplierTP);
 
         const rr = validateRiskReward(side, currentPrice, stopLoss, takeProfit);
 
@@ -533,7 +557,7 @@ serve(async (req) => {
     });
   } catch (error) {
     console.error('Trading bot error:', error);
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: (error as Error).message }), {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
