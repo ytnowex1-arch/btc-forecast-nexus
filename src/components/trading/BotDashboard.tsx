@@ -267,6 +267,13 @@ export default function BotDashboard() {
           >
             ⚙ Config
           </button>
+          <button
+            onClick={runBacktest}
+            disabled={backtesting}
+            className="px-3 py-1.5 text-xs font-mono font-semibold rounded-md bg-primary/20 text-primary hover:bg-primary/30 disabled:opacity-50 transition-colors"
+          >
+            {backtesting ? '⏳ Backtest...' : '📊 Backtest'}
+          </button>
         </div>
       </div>
 
