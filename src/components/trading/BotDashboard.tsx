@@ -62,6 +62,8 @@ export default function BotDashboard() {
   const [showConfig, setShowConfig] = useState(false);
   const [editConfig, setEditConfig] = useState({ leverage: 5, position_size_pct: 10, stop_loss_pct: 3, take_profit_pct: 6 });
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [backtestResult, setBacktestResult] = useState<any>(null);
+  const [backtesting, setBacktesting] = useState(false);
 
   // Fetch current BTC price
   useEffect(() => {
