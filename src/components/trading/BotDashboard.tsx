@@ -225,7 +225,7 @@ export default function BotDashboard() {
             </span>
           </div>
           <div className="text-xs font-mono text-muted-foreground mt-1">
-            Futures x{config?.leverage} | Interwał: {config?.interval} | Pozycja: {config?.position_size_pct}% | SL: {config?.stop_loss_pct}% | TP: {config?.take_profit_pct}%
+            Pullback EMA Strategy | 15m + 1H filter | x{config?.leverage} | Risk: 1% | R:R 1:2
           </div>
         </div>
         <div className="flex items-center gap-2">
