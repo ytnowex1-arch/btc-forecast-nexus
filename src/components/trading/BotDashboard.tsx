@@ -174,6 +174,17 @@ export default function BotDashboard() {
     setShowConfig(false);
   };
 
+  const runBacktest = async () => {
+    setBacktesting(true);
+    try {
+      const data = await callBot({ action: 'backtest', risk_pct: 1, balance: config?.initial_balance || 10000, leverage: config?.leverage || 5 });
+      if (data.backtest) setBacktestResult(data.backtest);
+    } catch (e) {
+      console.error('Backtest error:', e);
+    }
+    setBacktesting(false);
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-48">
