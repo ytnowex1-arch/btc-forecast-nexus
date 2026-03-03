@@ -326,6 +326,46 @@ export default function BotDashboard() {
         <StatCard label="Łącznie transakcji" value={String(trades.length)} />
       </div>
 
+      {/* Backtest Results */}
+      <AnimatePresence>
+        {backtestResult && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="rounded-lg border border-primary/30 bg-card p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-mono text-muted-foreground uppercase tracking-wider">📊 Wyniki Backtestu</h3>
+                <button onClick={() => setBacktestResult(null)} className="text-xs text-muted-foreground hover:text-foreground">✕</button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+                <StatCard label="Winrate" value={`${backtestResult.winrate.toFixed(1)}%`}
+                  color={backtestResult.winrate >= 40 ? 'bullish' : 'bearish'} />
+                <StatCard label="Profit Factor" value={backtestResult.profitFactor === Infinity ? '∞' : backtestResult.profitFactor.toFixed(2)}
+                  color={backtestResult.profitFactor >= 1.5 ? 'bullish' : backtestResult.profitFactor >= 1 ? undefined : 'bearish'} />
+                <StatCard label="Max Drawdown" value={`${backtestResult.maxDrawdownPct.toFixed(1)}%`}
+                  sub={`$${backtestResult.maxDrawdown.toFixed(2)}`}
+                  color={backtestResult.maxDrawdownPct <= 20 ? 'bullish' : 'bearish'} />
+                <StatCard label="Expectancy" value={`$${backtestResult.expectancy.toFixed(2)}`}
+                  color={backtestResult.expectancy > 0 ? 'bullish' : 'bearish'} />
+                <StatCard label="Sharpe Ratio" value={backtestResult.sharpeRatio.toFixed(2)}
+                  color={backtestResult.sharpeRatio >= 1 ? 'bullish' : backtestResult.sharpeRatio >= 0 ? undefined : 'bearish'} />
+                <StatCard label="Return" value={`${backtestResult.totalReturnPct >= 0 ? '+' : ''}${backtestResult.totalReturnPct.toFixed(1)}%`}
+                  sub={`$${backtestResult.totalReturn.toFixed(2)}`}
+                  color={backtestResult.totalReturnPct >= 0 ? 'bullish' : 'bearish'} />
+              </div>
+              <div className="grid grid-cols-3 gap-3 text-xs font-mono">
+                <div className="text-muted-foreground">Trades: <span className="text-foreground">{backtestResult.totalTrades}</span></div>
+                <div className="text-muted-foreground">Wins: <span className="text-bullish">{backtestResult.wins}</span> | Losses: <span className="text-bearish">{backtestResult.losses}</span></div>
+                <div className="text-muted-foreground">Avg Win: <span className="text-bullish">${backtestResult.avgWin.toFixed(2)}</span> | Avg Loss: <span className="text-bearish">${backtestResult.avgLoss.toFixed(2)}</span></div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Open Position with Trailing SL Visualization */}
       {openPositions.length > 0 && (
         <div className="rounded-lg border border-primary/30 glow-primary bg-card p-4 space-y-4">
