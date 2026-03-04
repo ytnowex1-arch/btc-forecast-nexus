@@ -143,9 +143,8 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
     reasoning.push(`🚫 ATR BLOCK: ATR14 ($${atr14Val.toFixed(0)}) > 2x ATR50 avg ($${atr50Val.toFixed(0)}) — ratio ${atrRatio.toFixed(2)}`);
   }
 
-  // === VOLUME CHECK ===
-  const volumeOk = !isNaN(volAvg) && volAvg > 0 && volCurrent > volAvg;
-  reasoning.push(`Volume: ${volCurrent.toFixed(0)} ${volumeOk ? '>' : '<'} avg ${(volAvg || 0).toFixed(0)} → ${volumeOk ? '✅' : '❌'}`);
+  // === VOLUME CHECK (disabled) ===
+  const volumeOk = true; // volume filter disabled per user request
 
   // === EMA STRUCTURE ===
   const emaLongSetup = ema20Val > ema50Val;
@@ -199,12 +198,10 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
     if (!emaLongSetup) missing.push('EMA20 < EMA50');
     if (!pullbackDetected) missing.push('No pullback');
     if (rsiVal <= 50) missing.push(`RSI ${rsiVal.toFixed(1)} ≤ 50`);
-    if (!volumeOk) missing.push('Low volume');
   } else {
     if (!emaShortSetup) missing.push('EMA20 > EMA50');
     if (!pullbackDetected) missing.push('No pullback');
     if (rsiVal >= 50) missing.push(`RSI ${rsiVal.toFixed(1)} ≥ 50`);
-    if (!volumeOk) missing.push('Low volume');
   }
   reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
   return noSignal;
