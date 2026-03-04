@@ -143,9 +143,8 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
     reasoning.push(`🚫 ATR BLOCK: ATR14 ($${atr14Val.toFixed(0)}) > 2x ATR50 avg ($${atr50Val.toFixed(0)}) — ratio ${atrRatio.toFixed(2)}`);
   }
 
-  // === VOLUME CHECK ===
-  const volumeOk = !isNaN(volAvg) && volAvg > 0 && volCurrent > volAvg;
-  reasoning.push(`Volume: ${volCurrent.toFixed(0)} ${volumeOk ? '>' : '<'} avg ${(volAvg || 0).toFixed(0)} → ${volumeOk ? '✅' : '❌'}`);
+  // === VOLUME CHECK (disabled) ===
+  const volumeOk = true; // volume filter disabled per user request
 
   // === EMA STRUCTURE ===
   const emaLongSetup = ema20Val > ema50Val;
@@ -199,12 +198,10 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
     if (!emaLongSetup) missing.push('EMA20 < EMA50');
     if (!pullbackDetected) missing.push('No pullback');
     if (rsiVal <= 50) missing.push(`RSI ${rsiVal.toFixed(1)} ≤ 50`);
-    if (!volumeOk) missing.push('Low volume');
   } else {
     if (!emaShortSetup) missing.push('EMA20 > EMA50');
     if (!pullbackDetected) missing.push('No pullback');
     if (rsiVal >= 50) missing.push(`RSI ${rsiVal.toFixed(1)} ≥ 50`);
-    if (!volumeOk) missing.push('Low volume');
   }
   reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
   return noSignal;
@@ -686,7 +683,7 @@ serve(async (req) => {
     await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
 
     await logBot(supabase, config.id, 'info',
-      `Tick: $${currentPrice.toFixed(2)} | Trend: ${signal.trendFilter} | EMA20: $${signal.ema20.toFixed(0)} | EMA50: $${signal.ema50.toFixed(0)} | RSI: ${signal.rsi.toFixed(1)} | Pullback: ${signal.pullbackDetected ? '✅' : '❌'} | Vol: ${signal.volumeOk ? '✅' : '❌'} | Bal: $${balance.toFixed(2)}`);
+      `Tick: $${currentPrice.toFixed(2)} | Trend: ${signal.trendFilter} | EMA20: $${signal.ema20.toFixed(0)} | EMA50: $${signal.ema50.toFixed(0)} | RSI: ${signal.rsi.toFixed(1)} | Pullback: ${signal.pullbackDetected ? '✅' : '❌'} | Bal: $${balance.toFixed(2)}`);
 
     const { data: positions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
