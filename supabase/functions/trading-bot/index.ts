@@ -332,13 +332,11 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
     const signal = analyzeStrategy(relevantH1, m15Window);
 
     if (signal.side !== 'none' && signal.riskPerUnit > 0) {
-      // Position sizing: risk 1% of balance
-      const riskAmount = balance * (riskPct / 100);
-      const qty = riskAmount / signal.riskPerUnit; // leverage only reduces margin
-      const margin = (qty * price) / leverage;
-
-      if (margin > balance * 0.9) continue; // don't risk more than 90% as margin
-      if (margin < 10) continue;
+      // Fixed $1000 margin per trade
+      const margin = 1000;
+      if (margin > balance) continue;
+      const notional = margin * leverage;
+      const qty = notional / price;
 
       balance -= margin;
       inPosition = true;
@@ -645,15 +643,14 @@ serve(async (req) => {
       }
 
       if (!cooldownActive && signal.riskPerUnit > 0) {
-        // Position sizing: risk 1% of balance
-        const riskPct = 1;
-        const riskAmount = balance * (riskPct / 100);
         const leverage = Number(config.leverage);
-        // qty = risk / SL distance (leverage only reduces margin, not risk per unit)
-        const qty = riskAmount / signal.riskPerUnit;
-        const margin = (qty * currentPrice) / leverage;
+        // Fixed margin of $1000 per trade
+        const margin = 1000;
+        if (margin <= balance) {
+          const notional = margin * leverage;
+          const qty = notional / currentPrice;
+          const riskAmount = qty * signal.riskPerUnit; // actual $ risk
 
-        if (margin > 10 && margin < balance * 0.9) {
           balance -= margin;
 
           const entryReason = signal.reasoning.join(' | ');
