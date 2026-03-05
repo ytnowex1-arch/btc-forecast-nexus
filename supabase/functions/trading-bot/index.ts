@@ -645,15 +645,14 @@ serve(async (req) => {
       }
 
       if (!cooldownActive && signal.riskPerUnit > 0) {
-        // Position sizing: risk 1% of balance
-        const riskPct = 1;
-        const riskAmount = balance * (riskPct / 100);
         const leverage = Number(config.leverage);
-        // qty = risk / SL distance (leverage only reduces margin, not risk per unit)
-        const qty = riskAmount / signal.riskPerUnit;
-        const margin = (qty * currentPrice) / leverage;
+        // Fixed margin of $1000 per trade
+        const margin = 1000;
+        if (margin <= balance) {
+          const notional = margin * leverage;
+          const qty = notional / currentPrice;
+          const riskAmount = qty * signal.riskPerUnit; // actual $ risk
 
-        if (margin > 10 && margin < balance * 0.9) {
           balance -= margin;
 
           const entryReason = signal.reasoning.join(' | ');
