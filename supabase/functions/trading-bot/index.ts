@@ -334,10 +334,10 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
     if (signal.side !== 'none' && signal.riskPerUnit > 0) {
       // Position sizing: risk 1% of balance
       const riskAmount = balance * (riskPct / 100);
-      const qty = (riskAmount / signal.riskPerUnit) * leverage;
+      const qty = riskAmount / signal.riskPerUnit; // leverage only reduces margin
       const margin = (qty * price) / leverage;
 
-      if (margin > balance * 0.5) continue; // don't risk more than 50% as margin
+      if (margin > balance * 0.9) continue; // don't risk more than 90% as margin
       if (margin < 10) continue;
 
       balance -= margin;
