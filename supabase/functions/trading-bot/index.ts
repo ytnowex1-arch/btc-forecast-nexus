@@ -649,10 +649,11 @@ serve(async (req) => {
         const riskPct = 1;
         const riskAmount = balance * (riskPct / 100);
         const leverage = Number(config.leverage);
-        const qty = (riskAmount / signal.riskPerUnit) * leverage;
+        // qty = risk / SL distance (leverage only reduces margin, not risk per unit)
+        const qty = riskAmount / signal.riskPerUnit;
         const margin = (qty * currentPrice) / leverage;
 
-        if (margin > 10 && margin < balance * 0.5) {
+        if (margin > 10 && margin < balance * 0.9) {
           balance -= margin;
 
           const entryReason = signal.reasoning.join(' | ');
