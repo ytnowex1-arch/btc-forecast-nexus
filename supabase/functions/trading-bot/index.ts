@@ -64,6 +64,25 @@ function calcRSI(closes: number[], period = 14): number[] {
   return rsi;
 }
 
+function calcMACD(closes: number[], fast = 12, slow = 26, sig = 9) {
+  const emaFast = calcEMA(closes, fast);
+  const emaSlow = calcEMA(closes, slow);
+  const macdLine = emaFast.map((v, i) => v - emaSlow[i]);
+  const signalLine = calcEMA(macdLine, sig);
+  return { macdLine, signalLine };
+}
+
+function calcStochastic(highs: number[], lows: number[], closes: number[], period = 14, smoothK = 3) {
+  const rawK: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) { rawK.push(NaN); continue; }
+    const hh = Math.max(...highs.slice(i - period + 1, i + 1));
+    const ll = Math.min(...lows.slice(i - period + 1, i + 1));
+    rawK.push(hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100);
+  }
+  return calcSMA(rawK, smoothK);
+}
+
 function calcATR(highs: number[], lows: number[], closes: number[], period = 14): number[] {
   const tr: number[] = [highs[0] - lows[0]];
   for (let i = 1; i < closes.length; i++) {
