@@ -207,52 +207,62 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
 
   if (atrBlocked) return noSignal;
 
-  // LONG conditions: trend bullish + EMA setup + EMA slope up + pullback + RSI 45-65 + MACD bullish + Stoch < 40 (oversold bounce)
-  const longRsiOk = rsiVal > 45 && rsiVal < 65;
-  const longStochOk = !isNaN(stochVal) ? stochVal < 40 : true;
-  const longMacdOk = macdBullish || macdBullCross;
+  // =========================================================
+  // COUNTER-TREND PULLBACK STRATEGY
+  // When H1 is bearish and 15m bounces UP → SHORT entry (mean reversion)
+  // When H1 is bullish and 15m dips DOWN → LONG entry (mean reversion)
+  // =========================================================
 
-  if (trendBias === 'bullish' && emaLongSetup && ema20SlopeLong && pullbackDetected && longRsiOk && longMacdOk && longStochOk) {
-    const sl = findSwingLow(lows, 10) - atr14Val * 0.1;
-    const riskPerUnit = price - sl;
-    if (riskPerUnit <= 0 || riskPerUnit > price * 0.02) { reasoning.push('❌ Invalid SL'); return noSignal; }
-    const tp = price + riskPerUnit * 3; // 1:3 RR
-    reasoning.push(`✅ LONG @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:3`);
-    return { ...noSignal, side: 'long', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit };
-  }
-
-  // SHORT conditions: trend bearish + EMA setup + EMA slope down + pullback + RSI 35-55 + MACD bearish + Stoch > 60 (overbought drop)
-  const shortRsiOk = rsiVal > 35 && rsiVal < 55;
-  const shortStochOk = !isNaN(stochVal) ? stochVal > 60 : true;
-  const shortMacdOk = macdBearish || macdBearCross;
-
-  if (trendBias === 'bearish' && emaShortSetup && ema20SlopeShort && pullbackDetected && shortRsiOk && shortMacdOk && shortStochOk) {
-    const sl = findSwingHigh(highs, 10) + atr14Val * 0.1;
-    const riskPerUnit = sl - price;
-    if (riskPerUnit <= 0 || riskPerUnit > price * 0.02) { reasoning.push('❌ Invalid SL'); return noSignal; }
-    const tp = price - riskPerUnit * 3; // 1:3 RR
-    reasoning.push(`✅ SHORT @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:3`);
-    return { ...noSignal, side: 'short', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit };
-  }
-
-  // No signal — explain why
-  const missing: string[] = [];
+  // LONG: H1 bullish + 15m dipped (price near/below EMA20, RSI < 45 = oversold dip)
   if (trendBias === 'bullish') {
-    if (!emaLongSetup) missing.push('EMA20 < EMA50');
-    if (!ema20SlopeLong) missing.push('EMA20 slope ↓');
-    if (!pullbackDetected) missing.push('No pullback');
-    if (!longRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} outside 45-65`);
+    // Relaxed pullback: price within 0.3% of EMA20 OR below EMA20 OR between EMAs
+    const longPullback = price <= ema20Val * 1.003 && price >= ema50Val * 0.997;
+    const longRsiOk = rsiVal > 30 && rsiVal < 55; // oversold-to-neutral zone in uptrend
+    const longMacdOk = macdBullish || macdBullCross || (macdVal > macdSig * 0.95); // near bullish
+
+    if (longPullback && longRsiOk && longMacdOk) {
+      const sl = findSwingLow(lows, 15) - atr14Val * 0.2;
+      const riskPerUnit = price - sl;
+      if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
+      const tp = price + riskPerUnit * 2.5;
+      reasoning.push(`✅ LONG ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
+      return { ...noSignal, side: 'long', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
+    }
+
+    // Explain why no entry
+    const missing: string[] = [];
+    if (!longPullback) missing.push(`No pullback (price $${price.toFixed(0)} vs EMA20 $${ema20Val.toFixed(0)})`);
+    if (!longRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} outside 30-55`);
     if (!longMacdOk) missing.push('MACD bearish');
-    if (!longStochOk) missing.push(`Stoch ${stochVal?.toFixed(0)} > 40`);
-  } else {
-    if (!emaShortSetup) missing.push('EMA20 > EMA50');
-    if (!ema20SlopeShort) missing.push('EMA20 slope ↑');
-    if (!pullbackDetected) missing.push('No pullback');
-    if (!shortRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} outside 35-55`);
-    if (!shortMacdOk) missing.push('MACD bullish');
-    if (!shortStochOk) missing.push(`Stoch ${stochVal?.toFixed(0)} < 60`);
+    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
+    return noSignal;
   }
-  reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
+
+  // SHORT: H1 bearish + 15m bounced UP (counter-trend pullback)
+  // Price ABOVE EMA20 or near resistance = perfect short entry in downtrend
+  if (trendBias === 'bearish') {
+    // Pullback UP: price at/above EMA20, or price bounced toward EMA50/resistance
+    const shortPullback = price >= ema20Val * 0.997 || (price > ema50Val * 0.995 && price < ema50Val * 1.005);
+    const shortRsiOk = rsiVal > 45; // Overbought bounce in downtrend — RSI above 45 means price rallied
+    const shortMacdOk = true; // In bearish H1, we don't need 15m MACD confirmation — the bounce IS the signal
+
+    if (shortPullback && shortRsiOk && shortMacdOk) {
+      const sl = findSwingHigh(highs, 15) + atr14Val * 0.2;
+      const riskPerUnit = sl - price;
+      if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
+      const tp = price - riskPerUnit * 2.5;
+      reasoning.push(`✅ SHORT ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
+      return { ...noSignal, side: 'short', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
+    }
+
+    // Explain why no entry
+    const missing: string[] = [];
+    if (!shortPullback) missing.push(`No pullback UP (price $${price.toFixed(0)} below EMA20 $${ema20Val.toFixed(0)})`);
+    if (!shortRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} < 45 (no bounce)`);
+    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
+    return noSignal;
+  }
+
   return noSignal;
 }
 
