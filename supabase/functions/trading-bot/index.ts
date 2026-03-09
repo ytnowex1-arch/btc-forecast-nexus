@@ -330,22 +330,17 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
         if (bar.low <= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.high >= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // Move SL to BE at 1R profit
-          const unrealizedR = (price - posEntry) / posRiskPerUnit;
-          if (!slMovedToBE && unrealizedR >= 1) {
-            posSL = posEntry;
-            slMovedToBE = true;
-          }
+          // Trailing SL: 1% below current price, only tighten
+          const trailingSL = price * 0.99;
+          if (trailingSL > posSL) posSL = trailingSL;
         }
       } else {
         if (bar.high >= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.low <= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          const unrealizedR = (posEntry - price) / posRiskPerUnit;
-          if (!slMovedToBE && unrealizedR >= 1) {
-            posSL = posEntry;
-            slMovedToBE = true;
-          }
+          // Trailing SL: 1% above current price, only tighten
+          const trailingSL = price * 1.01;
+          if (trailingSL < posSL) posSL = trailingSL;
         }
       }
 
@@ -656,21 +651,21 @@ serve(async (req) => {
         continue;
       }
 
-      // Move SL to Break-Even at 1R profit
-      const riskPerUnit = pos.side === 'long'
-        ? entryPrice - currentSL
-        : currentSL - entryPrice;
-      const unrealizedR = pos.side === 'long'
-        ? (currentPrice - entryPrice) / riskPerUnit
-        : (entryPrice - currentPrice) / riskPerUnit;
-
-      if (riskPerUnit > 0 && unrealizedR >= 1 && (
-        (pos.side === 'long' && currentSL < entryPrice) ||
-        (pos.side === 'short' && currentSL > entryPrice)
-      )) {
-        await supabase.from('bot_positions').update({ stop_loss: entryPrice }).eq('id', pos.id);
-        await logBot(supabase, config.id, 'info',
-          `🔒 BE MOVE: ${pos.side} SL → $${entryPrice.toFixed(0)} (1R reached, unrealized: ${unrealizedR.toFixed(1)}R)`);
+      // Trailing SL: always 1% from current price (only tighten, never loosen)
+      if (pos.side === 'long') {
+        const trailingSL = currentPrice * 0.99; // 1% below current price
+        if (trailingSL > currentSL) {
+          await supabase.from('bot_positions').update({ stop_loss: trailingSL }).eq('id', pos.id);
+          await logBot(supabase, config.id, 'info',
+            `🔒 TRAIL SL: LONG SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% below $${currentPrice.toFixed(0)})`);
+        }
+      } else {
+        const trailingSL = currentPrice * 1.01; // 1% above current price
+        if (trailingSL < currentSL) {
+          await supabase.from('bot_positions').update({ stop_loss: trailingSL }).eq('id', pos.id);
+          await logBot(supabase, config.id, 'info',
+            `🔒 TRAIL SL: SHORT SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% above $${currentPrice.toFixed(0)})`);
+        }
       }
     }
 
