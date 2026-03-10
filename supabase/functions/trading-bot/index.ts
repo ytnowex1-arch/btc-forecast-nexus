@@ -506,6 +506,19 @@ serve(async (req) => {
     if (action) {
       const body = bodyData;
 
+      // Status: return config + positions/trades/logs without running trading logic
+      if (action === 'status') {
+        const { data: positions } = await supabase.from('bot_positions')
+          .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
+        const { data: trades } = await supabase.from('bot_trades')
+          .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(50);
+        const { data: logs } = await supabase.from('bot_logs')
+          .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(30);
+        return new Response(JSON.stringify({ config, positions, trades, logs, executed: false }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
       if (action === 'toggle') {
         await supabase.from('bot_config').update({ is_active: !config.is_active }).eq('id', config.id);
         return new Response(JSON.stringify({ is_active: !config.is_active }), {
