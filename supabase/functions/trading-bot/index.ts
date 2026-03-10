@@ -503,10 +503,8 @@ serve(async (req) => {
     }
 
     // Handle manual actions
-    let action = null;
-    if (req.method === 'POST') {
-      const body = await req.json();
-      action = body.action;
+    if (action) {
+      const body = bodyData;
 
       if (action === 'toggle') {
         await supabase.from('bot_config').update({ is_active: !config.is_active }).eq('id', config.id);
