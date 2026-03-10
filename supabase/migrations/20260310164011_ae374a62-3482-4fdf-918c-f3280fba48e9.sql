@@ -1,0 +1,2 @@
+INSERT INTO public.bot_config (name, symbol, strategy, interval, leverage, initial_balance, current_balance, position_size_pct, stop_loss_pct, take_profit_pct, is_active)
+VALUES ('ETH Paper Bot', 'ETHUSDT', 'pullback_ema', '15m', 5, 10000, 10000, 10, 3, 6, false);

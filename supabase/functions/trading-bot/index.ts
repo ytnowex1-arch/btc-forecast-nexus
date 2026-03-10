@@ -468,19 +468,56 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const { data: configs } = await supabase.from('bot_config').select('*').limit(1);
-    if (!configs || configs.length === 0) {
+    // Support config_id parameter or default to first config
+    let action = null;
+    let bodyData: any = {};
+    if (req.method === 'POST') {
+      bodyData = await req.json();
+      action = bodyData.action;
+    }
+
+    const configId = bodyData.config_id || new URL(req.url).searchParams.get('config_id');
+
+    // If action is 'list_configs', return all configs
+    if (action === 'list_configs') {
+      const { data: allConfigs } = await supabase.from('bot_config').select('*').order('created_at');
+      return new Response(JSON.stringify({ configs: allConfigs || [] }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Get specific config or first one
+    let config: any;
+    if (configId) {
+      const { data } = await supabase.from('bot_config').select('*').eq('id', configId).single();
+      config = data;
+    } else {
+      const { data } = await supabase.from('bot_config').select('*').limit(1);
+      config = data?.[0];
+    }
+    
+    if (!config) {
       return new Response(JSON.stringify({ message: 'No bot config found' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 404,
       });
     }
-    const config = configs[0];
 
     // Handle manual actions
-    let action = null;
-    if (req.method === 'POST') {
-      const body = await req.json();
-      action = body.action;
+    if (action) {
+      const body = bodyData;
+
+      // Status: return config + positions/trades/logs without running trading logic
+      if (action === 'status') {
+        const { data: positions } = await supabase.from('bot_positions')
+          .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
+        const { data: trades } = await supabase.from('bot_trades')
+          .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(50);
+        const { data: logs } = await supabase.from('bot_logs')
+          .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(30);
+        return new Response(JSON.stringify({ config, positions, trades, logs, executed: false }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
 
       if (action === 'toggle') {
         await supabase.from('bot_config').update({ is_active: !config.is_active }).eq('id', config.id);
