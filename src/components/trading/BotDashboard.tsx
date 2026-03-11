@@ -257,10 +257,12 @@ export default function BotDashboard() {
     return sum + uPnl;
   }, 0);
 
-  const realizedPnl = config ? config.current_balance - config.initial_balance : 0;
+  // Margin locked in open positions must be added back to get true realized P&L
+  const lockedMargin = openPositions.reduce((sum, pos) => sum + Number(pos.margin_used), 0);
+  const realizedPnl = config ? (config.current_balance + lockedMargin) - config.initial_balance : 0;
   const totalPnl = realizedPnl + unrealizedPnl;
   const totalPnlPct = config ? ((totalPnl / config.initial_balance) * 100) : 0;
-  const equity = config ? config.current_balance + unrealizedPnl : 0;
+  const equity = config ? config.current_balance + unrealizedPnl + lockedMargin : 0;
 
   return (
     <div className="space-y-4">
