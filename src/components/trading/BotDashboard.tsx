@@ -415,58 +415,122 @@ export default function BotDashboard() {
         )}
       </AnimatePresence>
 
-      {/* Open Position with Trailing SL Visualization */}
+      {/* Open Position — Binance-style card */}
       {openPositions.length > 0 && (
-        <div className="rounded-lg border border-primary/30 glow-primary bg-card p-4 space-y-4">
-          <h3 className="text-xs font-mono text-muted-foreground uppercase tracking-wider">Otwarte pozycje {symbolLabel}</h3>
+        <div className="space-y-3">
           {openPositions.map(pos => {
             const entry = Number(pos.entry_price);
             const sl = Number(pos.stop_loss);
             const tp = Number(pos.take_profit);
+            const qty = Number(pos.quantity);
+            const margin = Number(pos.margin_used);
+            const notional = entry * qty;
+            const slMoved = pos.side === 'long'
+              ? sl > entry * (1 - Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 1.005
+              : sl < entry * (1 + Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 0.995;
 
-            const barMin = Math.min(sl, entry, tp);
-            const barMax = Math.max(sl, entry, tp);
-            const barRange = barMax - barMin || 1;
-            const entryPos = ((entry - barMin) / barRange) * 100;
-            const slPos = ((sl - barMin) / barRange) * 100;
-            const tpPos = ((tp - barMin) / barRange) * 100;
-            const slMoved = pos.side === 'long' ? sl > entry * (1 - Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 1.005 : sl < entry * (1 + Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 0.995;
+            // Unrealized P&L
+            const uPnl = currentPrice
+              ? pos.side === 'long'
+                ? (currentPrice - entry) * qty
+                : (entry - currentPrice) * qty
+              : 0;
+            // ROI % based on margin (like Binance shows)
+            const roiPct = margin > 0 ? (uPnl / margin) * 100 : 0;
+            // Risk = margin / equity
+            const riskPct = equity > 0 ? (margin / equity) * 100 : 0;
+            // Est. liquidation price (simplified)
+            const liqPrice = pos.side === 'long'
+              ? entry * (1 - 1 / Number(pos.leverage) * 0.9)
+              : entry * (1 + 1 / Number(pos.leverage) * 0.9);
 
             return (
-              <div key={pos.id} className="space-y-2">
-                <div className="flex items-center justify-between text-sm font-mono">
-                  <div className="flex items-center gap-3">
-                    <span className={`font-bold ${pos.side === 'long' ? 'text-bullish' : 'text-bearish'}`}>
-                      {pos.side === 'long' ? '↑ LONG' : '↓ SHORT'}
-                    </span>
-                    <span className="text-foreground">${entry.toFixed(2)}</span>
-                    <span className="text-muted-foreground">x{pos.leverage}</span>
-                    <span className="text-muted-foreground">{Number(pos.quantity).toFixed(6)} {baseAsset}</span>
+              <div key={pos.id} className="rounded-lg border border-primary/30 glow-primary bg-card p-4 space-y-4">
+                {/* Row 1: Symbol + Side + Unrealized PnL */}
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold text-sm text-foreground">{activeSymbol}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                      pos.side === 'long' ? 'bg-bullish/20 text-bullish' : 'bg-bearish/20 text-bearish'
+                    }`}>{pos.side === 'long' ? 'Long' : 'Short'}</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-muted text-muted-foreground">Isolated</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-muted text-muted-foreground">{pos.leverage}X</span>
                   </div>
-                  <span className="text-muted-foreground text-xs">Margin: ${Number(pos.margin_used).toFixed(2)}</span>
+                  <div className="text-right">
+                    <div className="text-[10px] font-mono text-muted-foreground">Unrealized PnL (USDT)</div>
+                    <div className={`text-lg font-mono font-bold ${uPnl >= 0 ? 'text-bullish' : 'text-bearish'}`}>
+                      {uPnl >= 0 ? '+' : ''}{uPnl.toFixed(4)}
+                    </div>
+                    <div className={`text-xs font-mono font-bold ${roiPct >= 0 ? 'text-bullish' : 'text-bearish'}`}>
+                      ({roiPct >= 0 ? '+' : ''}{roiPct.toFixed(2)}%)
+                    </div>
+                  </div>
                 </div>
 
-                {/* SL / Entry / TP visual bar */}
-                <div className="relative h-6 rounded-md bg-muted/30 border border-border overflow-hidden">
-                  <div className="absolute top-0 h-full bg-bearish/15"
-                    style={{ left: `${Math.min(slPos, entryPos)}%`, width: `${Math.abs(entryPos - slPos)}%` }} />
-                  <div className="absolute top-0 h-full bg-bullish/15"
-                    style={{ left: `${Math.min(entryPos, tpPos)}%`, width: `${Math.abs(tpPos - entryPos)}%` }} />
-                  <div className="absolute top-0 h-full w-0.5 bg-bearish" style={{ left: `${slPos}%` }} />
-                  <div className="absolute top-0 h-full w-0.5 bg-foreground/50" style={{ left: `${entryPos}%` }} />
-                  <div className="absolute top-0 h-full w-0.5 bg-bullish" style={{ left: `${tpPos}%` }} />
-                  <span className="absolute text-[9px] font-mono text-bearish font-bold" style={{ left: `${slPos}%`, top: '1px', transform: 'translateX(-50%)' }}>SL</span>
-                  <span className="absolute text-[9px] font-mono text-muted-foreground" style={{ left: `${entryPos}%`, bottom: '1px', transform: 'translateX(-50%)' }}>ENTRY</span>
-                  <span className="absolute text-[9px] font-mono text-bullish font-bold" style={{ left: `${tpPos}%`, top: '1px', transform: 'translateX(-50%)' }}>TP</span>
+                {/* Row 2: Position / Margin / Risk */}
+                <div className="grid grid-cols-3 gap-4 text-xs font-mono">
+                  <div>
+                    <div className="text-muted-foreground text-[10px]">Position (USDT)</div>
+                    <div className="text-foreground font-semibold">{notional.toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground text-[10px]">Margin (USDT)</div>
+                    <div className="text-foreground font-semibold">{margin.toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-muted-foreground text-[10px]">Risk</div>
+                    <div className="text-foreground font-semibold">{riskPct.toFixed(2)}%</div>
+                  </div>
                 </div>
 
-                <div className="flex items-center justify-between text-[10px] font-mono">
-                  <div className="flex items-center gap-1">
-                    <span className="text-bearish">SL: ${sl.toFixed(0)}</span>
-                    {slMoved && <span className="text-warning animate-pulse">🔒 Trailing</span>}
+                {/* Row 3: Entry / Mark / Liq */}
+                <div className="grid grid-cols-3 gap-4 text-xs font-mono">
+                  <div>
+                    <div className="text-muted-foreground text-[10px]">Entry Price</div>
+                    <div className="text-foreground font-semibold">{entry.toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
                   </div>
-                  <span className="text-muted-foreground">Entry: ${entry.toFixed(0)}</span>
-                  <span className="text-bullish">TP: ${tp.toFixed(0)}</span>
+                  <div>
+                    <div className="text-muted-foreground text-[10px]">Mark Price</div>
+                    <div className="text-foreground font-semibold">{currentPrice ? currentPrice.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-muted-foreground text-[10px]">Est. Liq. Price</div>
+                    <div className="text-foreground font-semibold">{liqPrice.toLocaleString('en-US', { maximumFractionDigits: 1 })}</div>
+                  </div>
+                </div>
+
+                {/* Row 4: SL / TP bar */}
+                <div className="space-y-1">
+                  <div className="relative h-6 rounded-md bg-muted/30 border border-border overflow-hidden">
+                    {(() => {
+                      const barMin = Math.min(sl, entry, tp);
+                      const barMax = Math.max(sl, entry, tp);
+                      const barRange = barMax - barMin || 1;
+                      const entryPos = ((entry - barMin) / barRange) * 100;
+                      const slPos = ((sl - barMin) / barRange) * 100;
+                      const tpPos = ((tp - barMin) / barRange) * 100;
+                      return (
+                        <>
+                          <div className="absolute top-0 h-full bg-bearish/15" style={{ left: `${Math.min(slPos, entryPos)}%`, width: `${Math.abs(entryPos - slPos)}%` }} />
+                          <div className="absolute top-0 h-full bg-bullish/15" style={{ left: `${Math.min(entryPos, tpPos)}%`, width: `${Math.abs(tpPos - entryPos)}%` }} />
+                          <div className="absolute top-0 h-full w-0.5 bg-bearish" style={{ left: `${slPos}%` }} />
+                          <div className="absolute top-0 h-full w-0.5 bg-foreground/50" style={{ left: `${entryPos}%` }} />
+                          <div className="absolute top-0 h-full w-0.5 bg-bullish" style={{ left: `${tpPos}%` }} />
+                          <span className="absolute text-[9px] font-mono text-bearish font-bold" style={{ left: `${slPos}%`, top: '1px', transform: 'translateX(-50%)' }}>SL</span>
+                          <span className="absolute text-[9px] font-mono text-muted-foreground" style={{ left: `${entryPos}%`, bottom: '1px', transform: 'translateX(-50%)' }}>ENTRY</span>
+                          <span className="absolute text-[9px] font-mono text-bullish font-bold" style={{ left: `${tpPos}%`, top: '1px', transform: 'translateX(-50%)' }}>TP</span>
+                        </>
+                      );
+                    })()}
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] font-mono">
+                    <div className="flex items-center gap-1">
+                      <span className="text-bearish">SL: ${sl.toFixed(0)}</span>
+                      {slMoved && <span className="text-warning animate-pulse">🔒 Trailing</span>}
+                    </div>
+                    <span className="text-muted-foreground">Entry: ${entry.toFixed(0)}</span>
+                    <span className="text-bullish">TP: ${tp.toFixed(0)}</span>
+                  </div>
                 </div>
               </div>
             );
