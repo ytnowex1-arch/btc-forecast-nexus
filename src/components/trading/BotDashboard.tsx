@@ -1,82 +1,29 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { supabase } from '@/integrations/supabase/client';
 
-interface BotConfig {
-  id: string;
-  name: string;
-  symbol: string;
-  is_active: boolean;
-  current_balance: number;
-  initial_balance: number;
-  leverage: number;
-  position_size_pct: number;
-  stop_loss_pct: number;
-  take_profit_pct: number;
-  interval: string;
-}
-
-interface Position {
-  id: string;
-  side: string;
-  entry_price: number;
-  exit_price: number | null;
-  quantity: number;
-  leverage: number;
-  margin_used: number;
-  pnl: number | null;
-  pnl_pct: number | null;
-  status: string;
-  stop_loss: number | null;
-  take_profit: number | null;
-  entry_reason: string | null;
-  exit_reason: string | null;
-  opened_at: string;
-  closed_at: string | null;
-}
-
-interface Trade {
-  id: string;
-  action: string;
-  price: number;
-  quantity: number;
-  pnl: number | null;
-  balance_after: number | null;
-  reason: string | null;
-  created_at: string;
-}
-
-interface LogEntry {
-  id: string;
-  level: string;
-  message: string;
-  created_at: string;
-}
-
-const SYMBOL_LABELS: Record<string, string> = {
+// Konfiguracja etykiet dla symboli
+const SYMBOL_LABELS = {
   BTCUSDT: 'BTC',
   ETHUSDT: 'ETH',
 };
 
-export default function BotDashboard() {
-  const [configs, setConfigs] = useState<BotConfig[]>([]);
-  const [activeSymbol, setActiveSymbol] = useState<string>('BTCUSDT');
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+export default function App() {
+  const [configs, setConfigs] = useState([]);
+  const [activeSymbol, setActiveSymbol] = useState('BTCUSDT');
+  const [positions, setPositions] = useState([]);
+  const [trades, setTrades] = useState([]);
+  const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
-  const [activeTab, setActiveTab] = useState<'positions' | 'trades' | 'logs'>('positions');
+  const [activeTab, setActiveTab] = useState('positions');
   const [showConfig, setShowConfig] = useState(false);
   const [editConfig, setEditConfig] = useState({ leverage: 5, position_size_pct: 10, stop_loss_pct: 3, take_profit_pct: 6 });
-  const [prices, setPrices] = useState<Record<string, number>>({});
-  const [backtestResult, setBacktestResult] = useState<any>(null);
-  const [backtesting, setBacktesting] = useState(false);
+  const [prices, setPrices] = useState({});
 
   const config = configs.find(c => c.symbol === activeSymbol) || null;
   const currentPrice = prices[activeSymbol] || null;
 
-  // Fetch prices for all symbols
+  // Pobieranie cen z Binance
   useEffect(() => {
     const fetchPrices = async () => {
       try {
@@ -84,7 +31,7 @@ export default function BotDashboard() {
         const results = await Promise.all(
           symbols.map(s => fetch(`https://data-api.binance.vision/api/v3/ticker/price?symbol=${s}`).then(r => r.json()))
         );
-        const newPrices: Record<string, number> = {};
+        const newPrices = {};
         symbols.forEach((s, i) => { newPrices[s] = parseFloat(results[i].price); });
         setPrices(newPrices);
       } catch (e) { /* ignore */ }
@@ -94,7 +41,7 @@ export default function BotDashboard() {
     return () => clearInterval(iv);
   }, []);
 
-  const callBot = useCallback(async (body?: any) => {
+  const callBot = useCallback(async (body) => {
     const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
     const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
     const res = await fetch(
@@ -116,35 +63,19 @@ export default function BotDashboard() {
     try {
       const data = await callBot({ action: 'list_configs' });
       if (data.configs) setConfigs(data.configs);
-    } catch (e) {
-      console.error('Failed to fetch configs:', e);
-    }
+    } catch (e) { console.error(e); }
   }, [callBot]);
 
   const fetchStatus = useCallback(async () => {
     if (!config) return;
     try {
       const data = await callBot({ action: 'status', config_id: config.id });
-      if (data.config) {
-        setConfigs(prev => prev.map(c => c.id === data.config.id ? data.config : c));
-        if (!showConfig) {
-          setEditConfig({
-            leverage: data.config.leverage,
-            position_size_pct: data.config.position_size_pct,
-            stop_loss_pct: data.config.stop_loss_pct,
-            take_profit_pct: data.config.take_profit_pct,
-          });
-        }
-      }
+      if (data.config) setConfigs(prev => prev.map(c => c.id === data.config.id ? data.config : c));
       if (data.positions) setPositions(data.positions);
       if (data.trades) setTrades(data.trades);
       if (data.logs) setLogs(data.logs);
-    } catch (e) {
-      console.error('Failed to fetch bot status:', e);
-    } finally {
-      setLoading(false);
-    }
-  }, [callBot, config, showConfig]);
+    } catch (e) { console.error(e); } finally { setLoading(false); }
+  }, [callBot, config]);
 
   useEffect(() => {
     fetchConfigs().then(() => setLoading(false));
@@ -156,18 +87,6 @@ export default function BotDashboard() {
     const interval = setInterval(fetchStatus, 30000);
     return () => clearInterval(interval);
   }, [fetchStatus, config]);
-
-  useEffect(() => {
-    if (config) {
-      setEditConfig({
-        leverage: config.leverage,
-        position_size_pct: config.position_size_pct,
-        stop_loss_pct: config.stop_loss_pct,
-        take_profit_pct: config.take_profit_pct,
-      });
-      setBacktestResult(null);
-    }
-  }, [activeSymbol, config]);
 
   const toggleBot = async () => {
     if (!config) return;
@@ -181,31 +100,8 @@ export default function BotDashboard() {
     if (!config) return;
     setExecuting(true);
     const data = await callBot({ action: 'run', config_id: config.id });
-    if (data.config) setConfigs(prev => prev.map(c => c.id === data.config.id ? data.config : c));
     if (data.positions) setPositions(data.positions);
-    if (data.trades) setTrades(data.trades);
     if (data.logs) setLogs(data.logs);
-    setExecuting(false);
-  };
-
-  const resetBot = async () => {
-    if (!config) return;
-    if (!confirm(`Resetować bota ${SYMBOL_LABELS[config.symbol]}? Wszystkie otwarte pozycje zostaną zamknięte.`)) return;
-    setExecuting(true);
-    await callBot({ action: 'reset', config_id: config.id });
-    await fetchStatus();
-    setExecuting(false);
-  };
-
-  const resetBalance = async () => {
-    if (!config) return;
-    const newBalance = prompt('Podaj nowe saldo startowe (np. 10000):', '10000');
-    if (!newBalance) return;
-    const amount = parseFloat(newBalance);
-    if (isNaN(amount) || amount <= 0) { alert('Nieprawidłowa kwota'); return; }
-    setExecuting(true);
-    await callBot({ action: 'reset_balance', config_id: config.id, new_balance: amount });
-    await fetchStatus();
     setExecuting(false);
   };
 
@@ -218,69 +114,92 @@ export default function BotDashboard() {
     setShowConfig(false);
   };
 
-  const runBacktest = async () => {
-    if (!config) return;
-    setBacktesting(true);
-    try {
-      const data = await callBot({ action: 'backtest', config_id: config.id, risk_pct: 1, balance: config.initial_balance || 10000, leverage: config.leverage || 5 });
-      if (data.backtest) setBacktestResult(data.backtest);
-    } catch (e) {
-      console.error('Backtest error:', e);
-    }
-    setBacktesting(false);
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-48">
-        <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  if (loading) return <div className="p-8 text-center font-mono">Ładowanie...</div>;
 
   const openPositions = positions.filter(p => p.status === 'open');
-  const symbolLabel = SYMBOL_LABELS[activeSymbol] || activeSymbol;
-
-  const unrealizedPnl = openPositions.reduce((sum, pos) => {
-    if (!currentPrice) return sum;
-    const entry = Number(pos.entry_price);
-    const qty = Number(pos.quantity);
-    return sum + (pos.side === 'long' ? (currentPrice - entry) * qty : (entry - currentPrice) * qty);
-  }, 0);
-
-  const lockedMargin = openPositions.reduce((sum, pos) => sum + Number(pos.margin_used), 0);
-  const realizedPnl = config ? (config.current_balance + lockedMargin) - config.initial_balance : 0;
-  const totalPnl = realizedPnl + unrealizedPnl;
-  const totalPnlPct = config ? ((totalPnl / config.initial_balance) * 100) : 0;
-  const equity = config ? config.current_balance + unrealizedPnl + lockedMargin : 0;
 
   return (
-    <div className="space-y-4">
-      <div className="flex rounded-md border border-border overflow-hidden w-fit">
+    <div className="max-w-4xl mx-auto p-4 space-y-6 font-mono">
+      {/* Przełącznik symboli */}
+      <div className="flex gap-2">
         {configs.map(c => (
-          <button key={c.id} onClick={() => setActiveSymbol(c.symbol)}
-            className={`px-4 py-2 text-xs font-mono font-semibold transition-colors flex items-center gap-2 ${activeSymbol === c.symbol ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}>
+          <button key={c.id} onClick={() => setActiveSymbol(c.symbol)} className={`px-4 py-2 text-xs border ${activeSymbol === c.symbol ? 'bg-primary text-white' : 'bg-card'}`}>
             {SYMBOL_LABELS[c.symbol] || c.symbol}
-            {c.is_active && <span className="w-1.5 h-1.5 rounded-full bg-bullish animate-pulse-glow" />}
           </button>
         ))}
       </div>
 
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-border bg-card p-4">
+      {/* Kontrolki bota */}
+      <div className="p-4 border bg-card rounded-lg flex justify-between items-center">
         <div>
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg font-mono font-bold">🤖 {symbolLabel} Paper Bot</h2>
-            <span className={`text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded-full ${config?.is_active ? 'bg-bullish/15 text-bullish animate-pulse-glow' : 'bg-muted text-muted-foreground'}`}>
-              {config?.is_active ? 'AKTYWNY' : 'ZATRZYMANY'}
-            </span>
-            {currentPrice && <span className="text-sm font-mono text-muted-foreground">${currentPrice.toLocaleString()}</span>}
-          </div>
-          <div className="text-xs font-mono text-muted-foreground mt-1">
-            Pullback EMA Strategy | x{config?.leverage} | Risk: 1%
-          </div>
+          <h2 className="font-bold">{SYMBOL_LABELS[activeSymbol]} Bot</h2>
+          <p className="text-[10px] text-muted-foreground uppercase">{config?.is_active ? '● Aktywny' : '○ Zatrzymany'}</p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <button onClick={runOnce} disabled={executing} className="px-3 py-1.5 text-xs font-mono rounded-md bg-primary/20 text-primary">▶ Wykonaj raz</button>
+        <div className="flex gap-2">
+          <button onClick={runOnce} disabled={executing} className="px-3 py-1.5 text-xs bg-blue-500/20 text-blue-500 rounded">
+            {executing ? '...' : 'Wykonaj raz'}
+          </button>
+          <button onClick={toggleBot} className={`px-3 py-1.5 text-xs rounded ${config?.is_active ? 'bg-red-500/20 text-red-500' : 'bg-green-500/20 text-green-500'}`}>
+            {config?.is_active ? 'Stop' : 'Start'}
+          </button>
+        </div>
+      </div>
+
+      {/* Pozycje */}
+      {openPositions.map(pos => {
+        const entry = Number(pos.entry_price);
+        const sl = Number(pos.stop_loss);
+        const qty = Number(pos.quantity);
+        const margin = Number(pos.margin_used);
+        const uPnl = currentPrice ? (pos.side === 'long' ? (currentPrice - entry) * qty : (entry - currentPrice) * qty) : 0;
+        const roiPct = (uPnl / margin) * 100;
+
+        // Logika Trailingu: Napis pojawia się, gdy SL jest powyżej wejścia (dla Longa)
+        const slMoved = pos.side === 'long' ? (sl > entry) : (sl < entry);
+
+        return (
+          <div key={pos.id} className="p-4 border-2 border-primary/50 rounded-lg space-y-4 bg-card">
+            <div className="flex justify-between items-center">
+              <span className="font-bold">{activeSymbol} {pos.side.toUpperCase()}</span>
+              <div className="text-right">
+                <div className={`text-lg font-bold ${uPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  {uPnl >= 0 ? '+' : ''}{uPnl.toFixed(2)} USDT
+                </div>
+                <div className="text-xs font-bold">ROI: {roiPct.toFixed(2)}%</div>
+              </div>
+            </div>
+
+            <div className="flex justify-between text-[10px] text-muted-foreground border-t pt-2">
+              <span>Entry: ${entry.toFixed(2)}</span>
+              <span>Mark: ${currentPrice?.toFixed(2)}</span>
+              {slMoved && <span className="text-orange-500 font-bold animate-pulse">🔒 TRAILING</span>}
+            </div>
+            
+            <div className="text-[10px] flex justify-between">
+              <span className="text-red-400">SL: ${sl.toFixed(2)}</span>
+              <span className="text-green-400">TP: ${Number(pos.take_profit).toFixed(2)}</span>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Tabela logów */}
+      <div className="border rounded-lg overflow-hidden">
+        <div className="bg-muted p-2 text-[10px] font-bold border-b">LOGI SYSTEMOWE</div>
+        <div className="max-h-40 overflow-y-auto p-2 space-y-1 bg-black/5">
+          {logs.slice(0, 10).map(l => (
+            <div key={l.id} className="text-[10px] flex gap-2">
+              <span className="text-muted-foreground">[{new Date(l.created_at).toLocaleTimeString()}]</span>
+              <span className={l.message.includes('TRAIL') ? 'text-orange-500' : ''}>{l.message}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+         <button onClick={runOnce} disabled={executing} className="px-3 py-1.5 text-xs font-mono rounded-md bg-primary/20 text-primary">▶ Wykonaj raz</button>
           <button onClick={toggleBot} disabled={executing} className={`px-3 py-1.5 text-xs font-mono rounded-md ${config?.is_active ? 'bg-bearish/20 text-bearish' : 'bg-bullish/20 text-bullish'}`}>{config?.is_active ? '⏸ Stop' : '▶ Start'}</button>
           <button onClick={() => setShowConfig(!showConfig)} className="px-3 py-1.5 text-xs font-mono rounded-md bg-muted text-muted-foreground">⚙ Config</button>
         </div>
