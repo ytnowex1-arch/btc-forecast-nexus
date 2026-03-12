@@ -127,12 +127,15 @@ export default function BotDashboard() {
       const data = await callBot({ action: 'status', config_id: config.id });
       if (data.config) {
         setConfigs(prev => prev.map(c => c.id === data.config.id ? data.config : c));
-        setEditConfig({
-          leverage: data.config.leverage,
-          position_size_pct: data.config.position_size_pct,
-          stop_loss_pct: data.config.stop_loss_pct,
-          take_profit_pct: data.config.take_profit_pct,
-        });
+        // Only sync editConfig when config panel is closed to avoid overwriting user input
+        if (!showConfig) {
+          setEditConfig({
+            leverage: data.config.leverage,
+            position_size_pct: data.config.position_size_pct,
+            stop_loss_pct: data.config.stop_loss_pct,
+            take_profit_pct: data.config.take_profit_pct,
+          });
+        }
       }
       if (data.positions) setPositions(data.positions);
       if (data.trades) setTrades(data.trades);

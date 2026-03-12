@@ -330,17 +330,17 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
         if (bar.low <= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.high >= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // Trailing SL: 1% below current price, only tighten, never worse than entry
+          // Trailing SL: 1% below current price, only tighten
           const trailingSL = price * 0.99;
-          if (trailingSL > posSL && trailingSL >= posEntry) posSL = trailingSL;
+          if (trailingSL > posSL) posSL = trailingSL;
         }
       } else {
         if (bar.high >= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.low <= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // Trailing SL: 1% above current price, only tighten, never worse than entry
+          // Trailing SL: 1% above current price, only tighten
           const trailingSL = price * 1.01;
-          if (trailingSL < posSL && trailingSL <= posEntry) posSL = trailingSL;
+          if (trailingSL < posSL) posSL = trailingSL;
         }
       }
 
