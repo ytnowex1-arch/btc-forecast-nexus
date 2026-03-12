@@ -689,22 +689,23 @@ serve(async (req) => {
       }
 
       // Trailing SL: always 1% from current price (only tighten, never loosen)
-      // IMPORTANT: Never trail SL to a worse position than entry (break-even protection)
       if (pos.side === 'long') {
         const trailingSL = currentPrice * 0.99; // 1% below current price
-        // Only trail if: 1) tighter than current SL, 2) at least break-even (>= entry)
-        if (trailingSL > currentSL && trailingSL >= entryPrice) {
+        // Only trail if tighter than current SL (never loosen)
+        if (trailingSL > currentSL) {
           await supabase.from('bot_positions').update({ stop_loss: trailingSL }).eq('id', pos.id);
+          const label = trailingSL >= entryPrice ? '🔒 TRAIL SL (BE+)' : '🔒 TRAIL SL';
           await logBot(supabase, config.id, 'info',
-            `🔒 TRAIL SL: LONG SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% below $${currentPrice.toFixed(0)})`);
+            `${label}: LONG SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% below $${currentPrice.toFixed(0)})`);
         }
       } else {
         const trailingSL = currentPrice * 1.01; // 1% above current price
-        // Only trail if: 1) tighter than current SL, 2) at least break-even (<= entry)
-        if (trailingSL < currentSL && trailingSL <= entryPrice) {
+        // Only trail if tighter than current SL (never loosen)
+        if (trailingSL < currentSL) {
           await supabase.from('bot_positions').update({ stop_loss: trailingSL }).eq('id', pos.id);
+          const label = trailingSL <= entryPrice ? '🔒 TRAIL SL (BE+)' : '🔒 TRAIL SL';
           await logBot(supabase, config.id, 'info',
-            `🔒 TRAIL SL: SHORT SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% above $${currentPrice.toFixed(0)})`);
+            `${label}: SHORT SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% above $${currentPrice.toFixed(0)})`);
         }
       }
     }
