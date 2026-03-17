@@ -1,5 +1,5 @@
 /**
- * Multi-Timeframe Trend & Volatility Strategy
+ * Multi-Timeframe Trend & Volatility Strategy with ROI Trailing Stop
  */
 import type { Kline } from './binance';
 import { calculateEMA, calculateATR } from './indicators';
@@ -36,7 +36,7 @@ export interface StrategyResult {
 }
 
 /**
- * Analyze H1 trend using EMA 50/200
+ * Analiza trendu H1 przy użyciu EMA 50/200
  */
 export function analyzeH1Trend(h1Klines: Kline[]): H1TrendResult {
   const closes = h1Klines.map(k => k.close);
@@ -53,133 +53,130 @@ export function analyzeH1Trend(h1Klines: Kline[]): H1TrendResult {
 }
 
 /**
- * Calculate Average Daily Range over last N days
+ * Oblicza ADR (Average Daily Range)
  */
 export function calculateADR(dailyKlines: Kline[], period = 14): ADRAnalysis {
-  const len = dailyKlines.length;
-  const lookback = Math.min(period, len - 1);
+  const ranges = dailyKlines.map(k => k.high - k.low);
+  const adr = ranges.slice(-period).reduce((a, b) => a + b, 0) / period;
   
-  // ADR = average of (high - low) for last N daily candles (excluding current)
-  let sumRange = 0;
-  for (let i = len - 1 - lookback; i < len - 1; i++) {
-    sumRange += dailyKlines[i].high - dailyKlines[i].low;
-  }
-  const adr = lookback > 0 ? sumRange / lookback : 0;
-
-  // Current day's move
-  const today = dailyKlines[len - 1];
-  const currentDailyMove = today.high - today.low;
-  const adrUsedPct = adr > 0 ? (currentDailyMove / adr) * 100 : 0;
+  const lastDaily = dailyKlines[dailyKlines.length - 1];
+  const currentDailyMove = lastDaily.high - lastDaily.low;
+  const adrUsedPct = (currentDailyMove / adr) * 100;
 
   let status: ADRAnalysis['status'] = 'Normal';
-  let statusLabel = 'Normalny zakres';
-  if (adrUsedPct >= 100) {
+  let statusLabel = 'Zmienność OK';
+
+  if (adrUsedPct > 110) {
     status = 'Warning';
-    statusLabel = 'Rozszerzony ruch — oczekuj korekty/konsolidacji';
-  } else if (adrUsedPct >= 80) {
+    statusLabel = 'ADR Przekroczony — Ryzyko odwrócenia';
+  } else if (adrUsedPct > 85) {
     status = 'Extended';
-    statusLabel = 'Zbliżanie do ADR — ostrożnie';
+    statusLabel = 'Trend dojrzały';
   }
 
   return { adr, currentDailyMove, adrUsedPct, status, statusLabel };
 }
 
 /**
- * Detect pullback entry on M5 relative to H1 trend + daily ATR
+ * Pobiera ATR z interwału dziennego
  */
-export function detectPullback(
-  m5Klines: Kline[],
-  h1Trend: H1TrendResult,
-  dailyATR: number,
-  atrFraction = 0.3
-): PullbackSignal {
-  const closes = m5Klines.map(k => k.close);
-  const last = closes.length - 1;
-  
-  // Look back ~60 bars (5 hours on M5) to find swing high/low
-  const lookback = Math.min(60, last);
-  const recentSlice = closes.slice(last - lookback, last + 1);
-  const threshold = dailyATR * atrFraction;
-
-  if (h1Trend.trend === 'Bullish') {
-    const recentHigh = Math.max(...recentSlice);
-    const drop = recentHigh - closes[last];
-    if (drop >= threshold) {
-      return {
-        active: true,
-        type: 'pullback_long',
-        label: `Pullback Entry LONG — spadek $${drop.toFixed(0)} ≥ próg $${threshold.toFixed(0)}`,
-        dropAmount: drop,
-        threshold,
-      };
-    }
-  } else {
-    const recentLow = Math.min(...recentSlice);
-    const rise = closes[last] - recentLow;
-    if (rise >= threshold) {
-      return {
-        active: true,
-        type: 'pullback_short',
-        label: `Pullback Entry SHORT — wzrost $${rise.toFixed(0)} ≥ próg $${threshold.toFixed(0)}`,
-        dropAmount: rise,
-        threshold,
-      };
-    }
-  }
-
-  return {
-    active: false,
-    type: 'none',
-    label: 'Czekaj na pullback',
-    dropAmount: 0,
-    threshold,
-  };
-}
-
-/**
- * Calculate daily ATR from daily klines
- */
-export function getDailyATR(dailyKlines: Kline[], period = 14): number {
-  const highs = dailyKlines.map(k => k.high);
-  const lows = dailyKlines.map(k => k.low);
-  const closes = dailyKlines.map(k => k.close);
-  const atr = calculateATR(highs, lows, closes, period);
+export function getDailyATR(dailyKlines: Kline[]): number {
+  const atr = calculateATR(
+    dailyKlines.map(k => k.high),
+    dailyKlines.map(k => k.low),
+    dailyKlines.map(k => k.close),
+    14
+  );
   return atr[atr.length - 1];
 }
 
 /**
- * Position size calculator
+ * Detekcja pullbacku na M5
  */
-export interface PositionSizeResult {
-  slPrice: number;
-  slDistance: number;
-  riskAmount: number;
-  positionSize: number;
-  risk30pips: number;
-  risk100pips: number;
-}
+export function detectPullback(
+  m5Klines: Kline[],
+  h1Trend: H1TrendResult,
+  dailyATR: number
+): PullbackSignal {
+  const last = m5Klines[m5Klines.length - 1];
+  const prev = m5Klines[m5Klines.length - 2];
+  const threshold = dailyATR * 0.15; // 15% dziennego ATR jako próg pullbacku
 
-export function calculatePositionSize(
-  accountBalance: number,
-  riskPct: number, // e.g. 1 for 1%
-  entryPrice: number,
-  atr: number,
-  slMultiplier = 1.5
-): PositionSizeResult {
-  const slDistance = atr * slMultiplier;
-  const slPrice = entryPrice - slDistance; // for long; invert for short
-  const riskAmount = accountBalance * (riskPct / 100);
-  const positionSize = riskAmount / slDistance;
-  
-  // Capital at risk at specific pip distances
-  const risk30pips = positionSize * 30;
-  const risk100pips = positionSize * 100;
-
-  return { slPrice, slDistance, riskAmount, positionSize, risk30pips, risk100pips };
+  if (h1Trend.trend === 'Bullish') {
+    const drop = prev.high - last.close;
+    return {
+      active: drop >= threshold,
+      type: 'pullback_long',
+      label: drop >= threshold ? 'Korekta znaleziona' : 'Cena zbyt wysoko',
+      dropAmount: drop,
+      threshold
+    };
+  } else {
+    const pump = last.close - prev.low;
+    return {
+      active: pump >= threshold,
+      type: 'pullback_short',
+      label: pump >= threshold ? 'Odbicie znalezione' : 'Cena zbyt nisko',
+      dropAmount: pump,
+      threshold
+    };
+  }
 }
 
 /**
- * Full strategy analysis combining all components
+ * Kalkulator rozmiaru pozycji i poziomów SL/TP
+ */
+export function calculatePositionSize(
+  accountBalance: number,
+  riskPct: number,
+  currentPrice: number,
+  dailyATR: number
+) {
+  const slDistance = dailyATR * 1.5;
+  const slPrice = currentPrice - slDistance; // dla long; odwróć dla short
+  const riskAmount = accountBalance * (riskPct / 100);
+  const positionSize = riskAmount / slDistance;
+  
+  return { slPrice, slDistance, riskAmount, positionSize };
+}
+
+/**
+ * NOWA FUNKCJA: Trailing Stop oparty na ROI %
+ * Przesuwa SL co określony krok ROI (np. 1%)
+ */
+export function calculateRoiTrailingStop(
+  entryPrice: number,
+  currentPrice: number,
+  currentSL: number,
+  isLong: boolean,
+  roiStep: number = 1.0 // krok w procentach
+): number {
+  const profitPct = isLong 
+    ? ((currentPrice - entryPrice) / entryPrice) * 100 
+    : ((entryPrice - currentPrice) / entryPrice) * 100;
+
+  if (profitPct < roiStep) return currentSL;
+
+  const steps = Math.floor(profitPct / roiStep);
+  
+  // Nowy SL to cena wejścia + (krok - 1) * roiStep
+  // Przy 1% ROI -> SL ląduje na entryPrice (Break Even)
+  // Przy 2% ROI -> SL ląduje na entryPrice + 1% zysku
+  const movePct = (steps - 1) * (roiStep / 100);
+  const newSL = isLong 
+    ? entryPrice * (1 + movePct) 
+    : entryPrice * (1 - movePct);
+
+  // Zwracamy nowy SL tylko jeśli jest "lepszy" (wyższy dla long, niższy dla short)
+  if (isLong) {
+    return Math.max(currentSL, newSL);
+  } else {
+    return currentSL === 0 ? newSL : Math.min(currentSL, newSL);
+  }
+}
+
+/**
+ * Pełna analiza strategii
  */
 export function runStrategy(
   h1Klines: Kline[],
@@ -191,22 +188,18 @@ export function runStrategy(
   const dailyATR = getDailyATR(dailyKlines);
   const pullback = detectPullback(m5Klines, h1Trend, dailyATR);
 
-  // M5 signal: only BUY in bullish H1, only SELL in bearish H1
   let m5Signal: StrategyResult['m5Signal'] = 'WAIT';
   if (pullback.active) {
     m5Signal = h1Trend.trend === 'Bullish' ? 'BUY' : 'SELL';
   }
 
-  // If ADR is extended, override to WAIT
   if (adrAnalysis.status === 'Warning') {
     m5Signal = 'WAIT';
   }
 
   let overallLabel = 'Czekaj na ustawienie';
   if (m5Signal === 'BUY') overallLabel = '🟢 Wysoka szansa — wejście LONG';
-  else if (m5Signal === 'SELL') overallLabel = '🔴 Wysoka szansa — wejście SHORT';
-  else if (adrAnalysis.status === 'Warning') overallLabel = '⚠️ ADR wyczerpany — czekaj';
-  else if (pullback.active) overallLabel = '⏳ Pullback wykryty ale ADR ogranicza';
+  if (m5Signal === 'SELL') overallLabel = '🔴 Wysoka szansa — wejście SHORT';
 
   return { h1Trend, adrAnalysis, pullback, m5Signal, overallLabel };
 }
