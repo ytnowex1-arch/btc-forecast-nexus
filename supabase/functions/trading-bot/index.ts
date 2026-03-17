@@ -6,77 +6,417 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const BINANCE_URL = 'https://data-api.binance.vision/api/v3';
+
+interface Kline {
+  time: number; open: number; high: number; low: number; close: number; volume: number;
+}
+
+async function fetchKlines(symbol: string, interval: string, limit = 500): Promise<Kline[]> {
+  const res = await fetch(`${BINANCE_URL}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+  const data = await res.json();
+  return data.map((k: any[]) => ({
+    time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5],
+  }));
+}
+
 async function fetchCurrentPrice(symbol: string): Promise<number> {
-  const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+  const res = await fetch(`${BINANCE_URL}/ticker/price?symbol=${symbol}`);
   const data = await res.json();
   return parseFloat(data.price);
 }
 
-serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+// ========== INDICATORS ==========
+function calcEMA(data: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const ema: number[] = [data[0]];
+  for (let i = 1; i < data.length; i++) {
+    ema.push(data[i] * k + ema[i - 1] * (1 - k));
+  }
+  return ema;
+}
 
-  try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
+function calcSMA(data: number[], period: number): number[] {
+  const sma: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) { sma.push(NaN); continue; }
+    const sum = data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
+    sma.push(sum / period);
+  }
+  return sma;
+}
 
-    const { data: config } = await supabase.from('bot_configs').select('*').single();
-    if (!config || !config.is_active) return new Response('Bot inactive');
+function calcRSI(closes: number[], period = 14): number[] {
+  const rsi: number[] = new Array(period).fill(NaN);
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) avgGain += change; else avgLoss += Math.abs(change);
+  }
+  avgGain /= period; avgLoss /= period;
+  rsi.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(change, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-change, 0)) / period;
+    rsi.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  }
+  return rsi;
+}
 
-    const symbol = config.symbol || 'BTCUSDT';
-    const currentPrice = await fetchCurrentPrice(symbol);
+function calcMACD(closes: number[], fast = 12, slow = 26, sig = 9) {
+  const emaFast = calcEMA(closes, fast);
+  const emaSlow = calcEMA(closes, slow);
+  const macdLine = emaFast.map((v, i) => v - emaSlow[i]);
+  const signalLine = calcEMA(macdLine, sig);
+  return { macdLine, signalLine };
+}
 
-    // 1. ZARZĄDZANIE OTWARTYMI POZYCJAMI (ROI Trailing dla obu stron)
-    const { data: openPositions } = await supabase.from('bot_positions').select('*').eq('status', 'open');
+function calcStochastic(highs: number[], lows: number[], closes: number[], period = 14, smoothK = 3) {
+  const rawK: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) { rawK.push(NaN); continue; }
+    const hh = Math.max(...highs.slice(i - period + 1, i + 1));
+    const ll = Math.min(...lows.slice(i - period + 1, i + 1));
+    rawK.push(hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100);
+  }
+  return calcSMA(rawK, smoothK);
+}
 
-    if (openPositions) {
-      for (const pos of openPositions) {
-        const isLong = pos.side === 'LONG' || !pos.side;
-        const profitPct = isLong 
-          ? ((currentPrice - pos.entry_price) / pos.entry_price) * 100
-          : ((pos.entry_price - currentPrice) / pos.entry_price) * 100;
+function calcATR(highs: number[], lows: number[], closes: number[], period = 14): number[] {
+  const tr: number[] = [highs[0] - lows[0]];
+  for (let i = 1; i < closes.length; i++) {
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  return calcEMA(tr, period);
+}
 
-        const roiStep = 1.0;
-        if (profitPct >= roiStep) {
-          const steps = Math.floor(profitPct / roiStep);
-          const movePct = (steps - 1) * (roiStep / 100);
-          const newSL = isLong ? pos.entry_price * (1 + movePct) : pos.entry_price * (1 - movePct);
+// ========== SWING HIGH/LOW ==========
+function findSwingLow(lows: number[], lookback = 10): number {
+  const start = Math.max(0, lows.length - lookback);
+  return Math.min(...lows.slice(start, lows.length));
+}
 
-          const isBetter = isLong ? newSL > pos.stop_loss : newSL < pos.stop_loss;
-          if (isBetter) {
-            await supabase.from('bot_positions').update({ stop_loss: newSL }).eq('id', pos.id);
-            console.log(`[TRAILING] ${pos.side} ${symbol}: Nowy SL ${newSL.toFixed(2)}`);
-          }
+function findSwingHigh(highs: number[], lookback = 10): number {
+  const start = Math.max(0, highs.length - lookback);
+  return Math.max(...highs.slice(start, highs.length));
+}
+
+// ========== STRATEGY ANALYSIS ==========
+interface StrategySignal {
+  side: 'long' | 'short' | 'none';
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  riskPerUnit: number;
+  reasoning: string[];
+  trendFilter: string;
+  atrBlocked: boolean;
+  ema20: number;
+  ema50: number;
+  rsi: number;
+  atr14: number;
+  volumeOk: boolean;
+  pullbackDetected: boolean;
+}
+
+function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal {
+  const reasoning: string[] = [];
+
+  // === 1H TREND FILTER: EMA 200 ===
+  const h1Closes = h1Klines.map(k => k.close);
+  const h1Ema200 = calcEMA(h1Closes, 200);
+  const h1Last = h1Closes.length - 1;
+  const h1Price = h1Closes[h1Last];
+  const h1Ema200Val = h1Ema200[h1Last];
+  const trendBias = h1Price > h1Ema200Val ? 'bullish' : 'bearish';
+  reasoning.push(`1H: $${h1Price.toFixed(0)} ${trendBias === 'bullish' ? '>' : '<'} EMA200 $${h1Ema200Val.toFixed(0)} → ${trendBias.toUpperCase()}`);
+
+  // === 15M INDICATORS ===
+  const closes = m15Klines.map(k => k.close);
+  const highs = m15Klines.map(k => k.high);
+  const lows = m15Klines.map(k => k.low);
+  const volumes = m15Klines.map(k => k.volume);
+  const last = closes.length - 1;
+  const price = closes[last];
+
+  const ema20 = calcEMA(closes, 20);
+  const ema50 = calcEMA(closes, 50);
+  const rsi = calcRSI(closes, 14);
+  const atr14 = calcATR(highs, lows, closes, 14);
+  const atr50 = calcATR(highs, lows, closes, 50);
+  const macd = calcMACD(closes);
+  const stoch = calcStochastic(highs, lows, closes);
+
+  const ema20Val = ema20[last];
+  const ema50Val = ema50[last];
+  const rsiVal = rsi[last];
+  const atr14Val = atr14[last];
+  const atr50Val = atr50[last];
+  const macdVal = macd.macdLine[last];
+  const macdSig = macd.signalLine[last];
+  const prevMacd = macd.macdLine[last - 1];
+  const prevMacdSig = macd.signalLine[last - 1];
+  const stochVal = stoch[last];
+
+  // === ATR VOLATILITY FILTER ===
+  const atrRatio = atr50Val > 0 ? atr14Val / atr50Val : 1;
+  const atrBlocked = atrRatio > 2;
+  if (atrBlocked) {
+    reasoning.push(`🚫 ATR BLOCK: ATR14/ATR50 = ${atrRatio.toFixed(2)} > 2`);
+  }
+
+  const volumeOk = true;
+
+  // === EMA STRUCTURE + SLOPE ===
+  const emaLongSetup = ema20Val > ema50Val;
+  const emaShortSetup = ema20Val < ema50Val;
+  // EMA20 slope: must be moving in trend direction
+  const ema20Slope = ema20[last] - ema20[last - 3];
+  const ema20SlopeLong = ema20Slope > 0;
+  const ema20SlopeShort = ema20Slope < 0;
+  reasoning.push(`EMA20: $${ema20Val.toFixed(0)} | EMA50: $${ema50Val.toFixed(0)} | Slope: ${ema20Slope > 0 ? '↑' : '↓'} → ${emaLongSetup ? 'LONG' : emaShortSetup ? 'SHORT' : 'FLAT'}`);
+
+  // === PULLBACK DETECTION (tighter: 0.15% to EMA20 or between EMAs) ===
+  const pullbackToEma20 = Math.abs(price - ema20Val) / price < 0.0015;
+  const pullbackBetween = emaLongSetup
+    ? (price <= ema20Val * 1.0005 && price >= ema50Val * 0.999)
+    : (price >= ema20Val * 0.9995 && price <= ema50Val * 1.001);
+  const pullbackDetected = pullbackToEma20 || pullbackBetween;
+  reasoning.push(`Pullback: ${pullbackDetected ? '✅' : '❌'} (EMA20: ${pullbackToEma20}, between: ${pullbackBetween})`);
+
+  // === MACD CHECK ===
+  const macdBullCross = prevMacd <= prevMacdSig && macdVal > macdSig;
+  const macdBearCross = prevMacd >= prevMacdSig && macdVal < macdSig;
+  const macdBullish = macdVal > macdSig;
+  const macdBearish = macdVal < macdSig;
+  reasoning.push(`MACD: ${macdVal.toFixed(1)} vs Sig: ${macdSig.toFixed(1)} → ${macdBullish ? 'BULL' : 'BEAR'}${macdBullCross ? ' (CROSS↑)' : macdBearCross ? ' (CROSS↓)' : ''}`);
+
+  // === STOCHASTIC CHECK ===
+  reasoning.push(`Stoch: ${stochVal?.toFixed(1) || 'N/A'}`);
+
+  // === RSI CHECK ===
+  reasoning.push(`RSI(14): ${rsiVal.toFixed(1)}`);
+
+  // === DETERMINE SIGNAL ===
+  const noSignal: StrategySignal = {
+    side: 'none', entryPrice: price, stopLoss: 0, takeProfit: 0, riskPerUnit: 0,
+    reasoning, trendFilter: trendBias, atrBlocked, ema20: ema20Val, ema50: ema50Val,
+    rsi: rsiVal, atr14: atr14Val, volumeOk, pullbackDetected,
+  };
+
+  if (atrBlocked) return noSignal;
+
+  // =========================================================
+  // COUNTER-TREND PULLBACK STRATEGY
+  // When H1 is bearish and 15m bounces UP → SHORT entry (mean reversion)
+  // When H1 is bullish and 15m dips DOWN → LONG entry (mean reversion)
+  // =========================================================
+
+  // LONG: H1 bullish + 15m dipped (price near/below EMA20, RSI < 45 = oversold dip)
+  if (trendBias === 'bullish') {
+    // Relaxed pullback: price within 0.3% of EMA20 OR below EMA20 OR between EMAs
+    const longPullback = price <= ema20Val * 1.003 && price >= ema50Val * 0.997;
+    const longRsiOk = rsiVal > 30 && rsiVal < 55; // oversold-to-neutral zone in uptrend
+    const longMacdOk = macdBullish || macdBullCross || (macdVal > macdSig * 0.95); // near bullish
+
+    if (longPullback && longRsiOk && longMacdOk) {
+      const sl = findSwingLow(lows, 15) - atr14Val * 0.2;
+      const riskPerUnit = price - sl;
+      if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
+      const tp = price + riskPerUnit * 2.5;
+      reasoning.push(`✅ LONG ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
+      return { ...noSignal, side: 'long', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
+    }
+
+    // Explain why no entry
+    const missing: string[] = [];
+    if (!longPullback) missing.push(`No pullback (price $${price.toFixed(0)} vs EMA20 $${ema20Val.toFixed(0)})`);
+    if (!longRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} outside 30-55`);
+    if (!longMacdOk) missing.push('MACD bearish');
+    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
+    return noSignal;
+  }
+
+  // SHORT: H1 bearish + 15m bounced UP (counter-trend pullback)
+  // Price ABOVE EMA20 or near resistance = perfect short entry in downtrend
+  if (trendBias === 'bearish') {
+    // Pullback UP: price at/above EMA20, or price bounced toward EMA50/resistance
+    const shortPullback = price >= ema20Val * 0.997 || (price > ema50Val * 0.995 && price < ema50Val * 1.005);
+    const shortRsiOk = rsiVal > 45; // Overbought bounce in downtrend — RSI above 45 means price rallied
+    const shortMacdOk = true; // In bearish H1, we don't need 15m MACD confirmation — the bounce IS the signal
+
+    if (shortPullback && shortRsiOk && shortMacdOk) {
+      const sl = findSwingHigh(highs, 15) + atr14Val * 0.2;
+      const riskPerUnit = sl - price;
+      if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
+      const tp = price - riskPerUnit * 2.5;
+      reasoning.push(`✅ SHORT ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
+      return { ...noSignal, side: 'short', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
+    }
+
+    // Explain why no entry
+    const missing: string[] = [];
+    if (!shortPullback) missing.push(`No pullback UP (price $${price.toFixed(0)} below EMA20 $${ema20Val.toFixed(0)})`);
+    if (!shortRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} < 45 (no bounce)`);
+    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
+    return noSignal;
+  }
+
+  return noSignal;
+}
+
+// ========== BACKTEST ENGINE ==========
+interface BacktestTrade {
+  entryTime: number; exitTime: number; side: 'long' | 'short';
+  entryPrice: number; exitPrice: number; sl: number; tp: number;
+  pnl: number; pnlPct: number; exitReason: string;
+}
+
+interface BacktestResult {
+  trades: BacktestTrade[];
+  winrate: number;
+  profitFactor: number;
+  maxDrawdown: number;
+  maxDrawdownPct: number;
+  expectancy: number;
+  sharpeRatio: number;
+  totalReturn: number;
+  totalReturnPct: number;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  avgWin: number;
+  avgLoss: number;
+  equityCurve: { time: number; equity: number }[];
+}
+
+function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: number, riskPct: number, leverage: number): BacktestResult {
+  const trades: BacktestTrade[] = [];
+  let balance = initialBalance;
+  let peakBalance = initialBalance;
+  let maxDrawdown = 0;
+  let maxDrawdownPct = 0;
+  const equityCurve: { time: number; equity: number }[] = [{ time: m15Klines[0]?.time || 0, equity: balance }];
+
+  // We need at least 200 bars of 1H + 50 bars of 15m for indicators to warm up
+  const warmup15m = 60; // 60 bars warmup
+  let consecutiveLosses = 0;
+  let cooldownUntil = 0;
+
+  // Current position tracking
+  let inPosition = false;
+  let posSide: 'long' | 'short' = 'long';
+  let posEntry = 0;
+  let posSL = 0;
+  let posTP = 0;
+  let posQty = 0;
+  let posMargin = 0;
+  let posEntryTime = 0;
+  let posRiskPerUnit = 0;
+  let slMovedToBE = false;
+
+  for (let i = warmup15m; i < m15Klines.length; i++) {
+    const bar = m15Klines[i];
+    const price = bar.close;
+
+    // If in position, check SL/TP on this bar's high/low
+    if (inPosition) {
+      let exitPrice = 0;
+      let exitReason = '';
+
+      // Check SL hit
+      if (posSide === 'long') {
+        if (bar.low <= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
+        else if (bar.high >= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
+        else {
+          // Trailing SL: 1% below current price, only tighten
+          const trailingSL = price * 0.99;
+          if (trailingSL > posSL) posSL = trailingSL;
+        }
+      } else {
+        if (bar.high >= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
+        else if (bar.low <= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
+        else {
+          // Trailing SL: 1% above current price, only tighten
+          const trailingSL = price * 1.01;
+          if (trailingSL < posSL) posSL = trailingSL;
         }
       }
-    }
 
-    // 2. ANALIZA I OTWIERANIE POZYCJI (SHORT/LONG)
-    // [Tutaj wywołaj runStrategy() z plików wejściowych]
-    // Przykładowa akcja po otrzymaniu sygnału:
-    const signal = 'SELL'; // Testowy sygnał SHORT
-    if (signal === 'SELL' && (!openPositions || openPositions.length === 0)) {
-        // Obliczenia dla Shorta... (jak w strategy.ts)
-        const dailyATR = 1500; // Przykład
-        const slDistance = dailyATR * 1.5;
+      if (exitPrice > 0) {
+        const pnl = posSide === 'long'
+          ? (exitPrice - posEntry) * posQty
+          : (posEntry - exitPrice) * posQty;
+        const pnlPct = (pnl / posMargin) * 100;
+        balance += posMargin + pnl;
 
-        await supabase.from('bot_positions').insert({
-            bot_config_id: config.id,
-            symbol,
-            side: 'SHORT',
-            entry_price: currentPrice,
-            stop_loss: currentPrice + slDistance,
-            take_profit: currentPrice - (slDistance * 2),
-            status: 'open'
+        trades.push({
+          entryTime: posEntryTime, exitTime: bar.time, side: posSide,
+          entryPrice: posEntry, exitPrice, sl: posSL, tp: posTP,
+          pnl, pnlPct, exitReason,
         });
+
+        if (pnl < 0) { consecutiveLosses++; } else { consecutiveLosses = 0; }
+        if (consecutiveLosses >= 3) { cooldownUntil = bar.time + 4 * 3600; }
+
+        peakBalance = Math.max(peakBalance, balance);
+        const dd = peakBalance - balance;
+        const ddPct = peakBalance > 0 ? (dd / peakBalance) * 100 : 0;
+        if (dd > maxDrawdown) maxDrawdown = dd;
+        if (ddPct > maxDrawdownPct) maxDrawdownPct = ddPct;
+
+        equityCurve.push({ time: bar.time, equity: balance });
+        inPosition = false;
+      }
+      continue;
     }
 
-    return new Response(JSON.stringify({ status: 'ok', price: currentPrice }), { headers: corsHeaders });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+    // Cooldown check
+    if (bar.time < cooldownUntil) continue;
+
+    // Find corresponding 1H data up to this 15m bar's time
+    const relevantH1 = h1Klines.filter(k => k.time <= bar.time);
+    if (relevantH1.length < 210) continue; // need 200+ for EMA200
+
+    // Get last N 15m bars for analysis
+    const lookback = Math.min(i + 1, 300);
+    const m15Window = m15Klines.slice(i - lookback + 1, i + 1);
+
+    const signal = analyzeStrategy(relevantH1, m15Window);
+
+    if (signal.side !== 'none' && signal.riskPerUnit > 0) {
+      // Fixed $1000 margin per trade
+      const margin = 1000;
+      if (margin > balance) continue;
+      const notional = margin * leverage;
+      const qty = notional / price;
+
+      balance -= margin;
+      inPosition = true;
+      posSide = signal.side;
+      posEntry = price;
+      posSL = signal.stopLoss;
+      posTP = signal.takeProfit;
+      posQty = qty;
+      posMargin = margin;
+      posEntryTime = bar.time;
+      posRiskPerUnit = signal.riskPerUnit;
+      slMovedToBE = false;
+    }
   }
-});, tp: posTP, pnl, pnlPct: (pnl / posMargin) * 100,
+
+  // Close any open position at last price
+  if (inPosition) {
+    const lastPrice = m15Klines[m15Klines.length - 1].close;
+    const pnl = posSide === 'long'
+      ? (lastPrice - posEntry) * posQty
+      : (posEntry - lastPrice) * posQty;
+    balance += posMargin + pnl;
+    trades.push({
+      entryTime: posEntryTime, exitTime: m15Klines[m15Klines.length - 1].time,
+      side: posSide, entryPrice: posEntry, exitPrice: lastPrice,
+      sl: posSL, tp: posTP, pnl, pnlPct: (pnl / posMargin) * 100,
       exitReason: 'End of data',
     });
     equityCurve.push({ time: m15Klines[m15Klines.length - 1].time, equity: balance });
