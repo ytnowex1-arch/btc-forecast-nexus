@@ -1,5 +1,5 @@
 /**
- * Multi-Timeframe Trend & Volatility Strategy with ROI Trailing Stop
+ * Wielointerwałowa strategia trendu i zmienności z ROI Trailing Stop
  */
 import type { Kline } from './binance';
 import { calculateEMA, calculateATR } from './indicators';
@@ -35,9 +35,6 @@ export interface StrategyResult {
   overallLabel: string;
 }
 
-/**
- * Analiza trendu H1 przy użyciu EMA 50/200
- */
 export function analyzeH1Trend(h1Klines: Kline[]): H1TrendResult {
   const closes = h1Klines.map(k => k.close);
   const ema50 = calculateEMA(closes, 50);
@@ -52,20 +49,15 @@ export function analyzeH1Trend(h1Klines: Kline[]): H1TrendResult {
   };
 }
 
-/**
- * Oblicza ADR (Average Daily Range)
- */
 export function calculateADR(dailyKlines: Kline[], period = 14): ADRAnalysis {
   const ranges = dailyKlines.map(k => k.high - k.low);
   const adr = ranges.slice(-period).reduce((a, b) => a + b, 0) / period;
-  
   const lastDaily = dailyKlines[dailyKlines.length - 1];
   const currentDailyMove = lastDaily.high - lastDaily.low;
   const adrUsedPct = (currentDailyMove / adr) * 100;
 
   let status: ADRAnalysis['status'] = 'Normal';
   let statusLabel = 'Zmienność OK';
-
   if (adrUsedPct > 110) {
     status = 'Warning';
     statusLabel = 'ADR Przekroczony — Ryzyko odwrócenia';
@@ -77,9 +69,6 @@ export function calculateADR(dailyKlines: Kline[], period = 14): ADRAnalysis {
   return { adr, currentDailyMove, adrUsedPct, status, statusLabel };
 }
 
-/**
- * Pobiera ATR z interwału dziennego
- */
 export function getDailyATR(dailyKlines: Kline[]): number {
   const atr = calculateATR(
     dailyKlines.map(k => k.high),
@@ -90,9 +79,6 @@ export function getDailyATR(dailyKlines: Kline[]): number {
   return atr[atr.length - 1];
 }
 
-/**
- * Detekcja pullbacku na M5
- */
 export function detectPullback(
   m5Klines: Kline[],
   h1Trend: H1TrendResult,
@@ -100,7 +86,7 @@ export function detectPullback(
 ): PullbackSignal {
   const last = m5Klines[m5Klines.length - 1];
   const prev = m5Klines[m5Klines.length - 2];
-  const threshold = dailyATR * 0.15; // 15% dziennego ATR jako próg pullbacku
+  const threshold = dailyATR * 0.15;
 
   if (h1Trend.trend === 'Bullish') {
     const drop = prev.high - last.close;
@@ -124,33 +110,38 @@ export function detectPullback(
 }
 
 /**
- * Kalkulator rozmiaru pozycji i poziomów SL/TP
+ * Zaktualizowany kalkulator wielkości pozycji z obsługą SHORT
  */
 export function calculatePositionSize(
   accountBalance: number,
   riskPct: number,
   currentPrice: number,
-  dailyATR: number
+  dailyATR: number,
+  side: 'LONG' | 'SHORT' = 'LONG'
 ) {
   const slDistance = dailyATR * 1.5;
-  const slPrice = currentPrice - slDistance; // dla long; odwróć dla short
+  const slPrice = side === 'LONG' ? currentPrice - slDistance : currentPrice + slDistance;
   const riskAmount = accountBalance * (riskPct / 100);
   const positionSize = riskAmount / slDistance;
   
-  return { slPrice, slDistance, riskAmount, positionSize };
+  // Dodatkowe pola dla UI, aby zapobiec błędowi toFixed
+  const risk30pips = positionSize * 30;
+  const risk100pips = positionSize * 100;
+
+  return { slPrice, slDistance, riskAmount, positionSize, risk30pips, risk100pips };
 }
 
 /**
- * NOWA FUNKCJA: Trailing Stop oparty na ROI %
- * Przesuwa SL co określony krok ROI (np. 1%)
+ * Oblicza nowy Trailing Stop na podstawie ROI %
  */
 export function calculateRoiTrailingStop(
   entryPrice: number,
   currentPrice: number,
   currentSL: number,
-  isLong: boolean,
-  roiStep: number = 1.0 // krok w procentach
+  side: 'LONG' | 'SHORT',
+  roiStep: number = 1.0
 ): number {
+  const isLong = side === 'LONG';
   const profitPct = isLong 
     ? ((currentPrice - entryPrice) / entryPrice) * 100 
     : ((entryPrice - currentPrice) / entryPrice) * 100;
@@ -158,26 +149,14 @@ export function calculateRoiTrailingStop(
   if (profitPct < roiStep) return currentSL;
 
   const steps = Math.floor(profitPct / roiStep);
-  
-  // Nowy SL to cena wejścia + (krok - 1) * roiStep
-  // Przy 1% ROI -> SL ląduje na entryPrice (Break Even)
-  // Przy 2% ROI -> SL ląduje na entryPrice + 1% zysku
   const movePct = (steps - 1) * (roiStep / 100);
   const newSL = isLong 
     ? entryPrice * (1 + movePct) 
     : entryPrice * (1 - movePct);
 
-  // Zwracamy nowy SL tylko jeśli jest "lepszy" (wyższy dla long, niższy dla short)
-  if (isLong) {
-    return Math.max(currentSL, newSL);
-  } else {
-    return currentSL === 0 ? newSL : Math.min(currentSL, newSL);
-  }
+  return isLong ? Math.max(currentSL, newSL) : Math.min(currentSL, newSL);
 }
 
-/**
- * Pełna analiza strategii
- */
 export function runStrategy(
   h1Klines: Kline[],
   m5Klines: Kline[],
@@ -193,9 +172,7 @@ export function runStrategy(
     m5Signal = h1Trend.trend === 'Bullish' ? 'BUY' : 'SELL';
   }
 
-  if (adrAnalysis.status === 'Warning') {
-    m5Signal = 'WAIT';
-  }
+  if (adrAnalysis.status === 'Warning') m5Signal = 'WAIT';
 
   let overallLabel = 'Czekaj na ustawienie';
   if (m5Signal === 'BUY') overallLabel = '🟢 Wysoka szansa — wejście LONG';
