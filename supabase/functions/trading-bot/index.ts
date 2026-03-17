@@ -6,28 +6,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BINANCE_URL = 'https://data-api.binance.vision/api/v3';
-
-interface Kline {
-  time: number; open: number; high: number; low: number; close: number; volume: number;
-}
-
 async function fetchCurrentPrice(symbol: string): Promise<number> {
-  const res = await fetch(`${BINANCE_URL}/ticker/price?symbol=${symbol}`);
+  const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
   const data = await res.json();
   return parseFloat(data.price);
-}
-
-// ========== LOGIKA ROI TRAILING (Zaimplementowana bezpośrednio) ==========
-function calculateNewSL(entryPrice: number, currentPrice: number, currentSL: number, roiStep: number): number {
-  const profitPct = ((currentPrice - entryPrice) / entryPrice) * 100;
-  if (profitPct < roiStep) return currentSL;
-  
-  const steps = Math.floor(profitPct / roiStep);
-  const movePct = (steps - 1) * (roiStep / 100);
-  const newSL = entryPrice * (1 + movePct);
-  
-  return Math.max(currentSL, newSL);
 }
 
 serve(async (req) => {
@@ -39,243 +21,62 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // 1. Pobierz konfigurację bota
     const { data: config } = await supabase.from('bot_configs').select('*').single();
-    if (!config || !config.is_active) {
-      return new Response(JSON.stringify({ message: 'Bot nieaktywny' }), { headers: corsHeaders });
-    }
+    if (!config || !config.is_active) return new Response('Bot inactive');
 
     const symbol = config.symbol || 'BTCUSDT';
     const currentPrice = await fetchCurrentPrice(symbol);
 
-    // 2. ZARZĄDZANIE OTWARTYMI POZYCJAMI (ROI Trailing Stop)
-    const { data: openPositions } = await supabase
-      .from('bot_positions')
-      .select('*')
-      .eq('status', 'open')
-      .eq('bot_config_id', config.id);
+    // 1. ZARZĄDZANIE OTWARTYMI POZYCJAMI (ROI Trailing dla obu stron)
+    const { data: openPositions } = await supabase.from('bot_positions').select('*').eq('status', 'open');
 
-    if (openPositions && openPositions.length > 0) {
+    if (openPositions) {
       for (const pos of openPositions) {
-        const roiStep = 1.0; // Próg 1% ROI
-        const updatedSL = calculateNewSL(pos.entry_price, currentPrice, pos.stop_loss, roiStep);
+        const isLong = pos.side === 'LONG' || !pos.side;
+        const profitPct = isLong 
+          ? ((currentPrice - pos.entry_price) / pos.entry_price) * 100
+          : ((pos.entry_price - currentPrice) / pos.entry_price) * 100;
 
-        if (updatedSL > pos.stop_loss) {
-          console.log(`[ROI TRAILING] ${symbol}: Przesuwam SL na ${updatedSL.toFixed(2)} (Zysk ROI)`);
-          
-          await supabase
-            .from('bot_positions')
-            .update({ stop_loss: updatedSL })
-            .eq('id', pos.id);
+        const roiStep = 1.0;
+        if (profitPct >= roiStep) {
+          const steps = Math.floor(profitPct / roiStep);
+          const movePct = (steps - 1) * (roiStep / 100);
+          const newSL = isLong ? pos.entry_price * (1 + movePct) : pos.entry_price * (1 - movePct);
 
-          await supabase.from('bot_logs').insert({
+          const isBetter = isLong ? newSL > pos.stop_loss : newSL < pos.stop_loss;
+          if (isBetter) {
+            await supabase.from('bot_positions').update({ stop_loss: newSL }).eq('id', pos.id);
+            console.log(`[TRAILING] ${pos.side} ${symbol}: Nowy SL ${newSL.toFixed(2)}`);
+          }
+        }
+      }
+    }
+
+    // 2. ANALIZA I OTWIERANIE POZYCJI (SHORT/LONG)
+    // [Tutaj wywołaj runStrategy() z plików wejściowych]
+    // Przykładowa akcja po otrzymaniu sygnału:
+    const signal = 'SELL'; // Testowy sygnał SHORT
+    if (signal === 'SELL' && (!openPositions || openPositions.length === 0)) {
+        // Obliczenia dla Shorta... (jak w strategy.ts)
+        const dailyATR = 1500; // Przykład
+        const slDistance = dailyATR * 1.5;
+
+        await supabase.from('bot_positions').insert({
             bot_config_id: config.id,
-            level: 'info',
-            message: `Trailing ROI: Zaktualizowano SL dla ${symbol} na ${updatedSL.toFixed(2)}`
-          });
-          
-          // UWAGA: Tutaj należy dodać wywołanie API Binance cancelOrder/createOrder dla zlecenia Stop Loss
-        }
-
-        // Sprawdzenie czy cena uderzyła w SL lub TP (manualne wyjście jeśli Binance nie zadziałało)
-        if (currentPrice <= pos.stop_loss || currentPrice >= pos.take_profit) {
-          await supabase.from('bot_positions').update({ status: 'closed', closed_at: new Date() }).eq('id', pos.id);
-        }
-      }
-    }
-
-    // 3. ANALIZA NOWYCH SYGNAŁÓW (Logika z Twojego strategy.ts)
-    // [Tutaj pozostała część Twojego kodu analizującego sygnały wejścia...]
-
-    return new Response(JSON.stringify({ 
-      status: 'success', 
-      price: currentPrice,
-      active_positions: openPositions?.length || 0 
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-
-  } catch (error) {
-    console.error('Błąd bota:', error);
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500, headers: corsHeaders
-    });
-  }
-});ema50Val * 0.995 && price < ema50Val * 1.005);
-    const shortRsiOk = rsiVal > 45; // Overbought bounce in downtrend — RSI above 45 means price rallied
-    const shortMacdOk = true; // In bearish H1, we don't need 15m MACD confirmation — the bounce IS the signal
-
-    if (shortPullback && shortRsiOk && shortMacdOk) {
-      const sl = findSwingHigh(highs, 15) + atr14Val * 0.2;
-      const riskPerUnit = sl - price;
-      if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
-      const tp = price - riskPerUnit * 2.5;
-      reasoning.push(`✅ SHORT ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
-      return { ...noSignal, side: 'short', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
-    }
-
-    // Explain why no entry
-    const missing: string[] = [];
-    if (!shortPullback) missing.push(`No pullback UP (price $${price.toFixed(0)} below EMA20 $${ema20Val.toFixed(0)})`);
-    if (!shortRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} < 45 (no bounce)`);
-    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
-    return noSignal;
-  }
-
-  return noSignal;
-}
-
-// ========== BACKTEST ENGINE ==========
-interface BacktestTrade {
-  entryTime: number; exitTime: number; side: 'long' | 'short';
-  entryPrice: number; exitPrice: number; sl: number; tp: number;
-  pnl: number; pnlPct: number; exitReason: string;
-}
-
-interface BacktestResult {
-  trades: BacktestTrade[];
-  winrate: number;
-  profitFactor: number;
-  maxDrawdown: number;
-  maxDrawdownPct: number;
-  expectancy: number;
-  sharpeRatio: number;
-  totalReturn: number;
-  totalReturnPct: number;
-  totalTrades: number;
-  wins: number;
-  losses: number;
-  avgWin: number;
-  avgLoss: number;
-  equityCurve: { time: number; equity: number }[];
-}
-
-function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: number, riskPct: number, leverage: number): BacktestResult {
-  const trades: BacktestTrade[] = [];
-  let balance = initialBalance;
-  let peakBalance = initialBalance;
-  let maxDrawdown = 0;
-  let maxDrawdownPct = 0;
-  const equityCurve: { time: number; equity: number }[] = [{ time: m15Klines[0]?.time || 0, equity: balance }];
-
-  // We need at least 200 bars of 1H + 50 bars of 15m for indicators to warm up
-  const warmup15m = 60; // 60 bars warmup
-  let consecutiveLosses = 0;
-  let cooldownUntil = 0;
-
-  // Current position tracking
-  let inPosition = false;
-  let posSide: 'long' | 'short' = 'long';
-  let posEntry = 0;
-  let posSL = 0;
-  let posTP = 0;
-  let posQty = 0;
-  let posMargin = 0;
-  let posEntryTime = 0;
-  let posRiskPerUnit = 0;
-  let slMovedToBE = false;
-
-  for (let i = warmup15m; i < m15Klines.length; i++) {
-    const bar = m15Klines[i];
-    const price = bar.close;
-
-    // If in position, check SL/TP on this bar's high/low
-    if (inPosition) {
-      let exitPrice = 0;
-      let exitReason = '';
-
-      // Check SL hit
-      if (posSide === 'long') {
-        if (bar.low <= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
-        else if (bar.high >= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
-        else {
-          // Trailing SL: 1% below current price, only tighten
-          const trailingSL = price * 0.99;
-          if (trailingSL > posSL) posSL = trailingSL;
-        }
-      } else {
-        if (bar.high >= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
-        else if (bar.low <= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
-        else {
-          // Trailing SL: 1% above current price, only tighten
-          const trailingSL = price * 1.01;
-          if (trailingSL < posSL) posSL = trailingSL;
-        }
-      }
-
-      if (exitPrice > 0) {
-        const pnl = posSide === 'long'
-          ? (exitPrice - posEntry) * posQty
-          : (posEntry - exitPrice) * posQty;
-        const pnlPct = (pnl / posMargin) * 100;
-        balance += posMargin + pnl;
-
-        trades.push({
-          entryTime: posEntryTime, exitTime: bar.time, side: posSide,
-          entryPrice: posEntry, exitPrice, sl: posSL, tp: posTP,
-          pnl, pnlPct, exitReason,
+            symbol,
+            side: 'SHORT',
+            entry_price: currentPrice,
+            stop_loss: currentPrice + slDistance,
+            take_profit: currentPrice - (slDistance * 2),
+            status: 'open'
         });
-
-        if (pnl < 0) { consecutiveLosses++; } else { consecutiveLosses = 0; }
-        if (consecutiveLosses >= 3) { cooldownUntil = bar.time + 4 * 3600; }
-
-        peakBalance = Math.max(peakBalance, balance);
-        const dd = peakBalance - balance;
-        const ddPct = peakBalance > 0 ? (dd / peakBalance) * 100 : 0;
-        if (dd > maxDrawdown) maxDrawdown = dd;
-        if (ddPct > maxDrawdownPct) maxDrawdownPct = ddPct;
-
-        equityCurve.push({ time: bar.time, equity: balance });
-        inPosition = false;
-      }
-      continue;
     }
 
-    // Cooldown check
-    if (bar.time < cooldownUntil) continue;
-
-    // Find corresponding 1H data up to this 15m bar's time
-    const relevantH1 = h1Klines.filter(k => k.time <= bar.time);
-    if (relevantH1.length < 210) continue; // need 200+ for EMA200
-
-    // Get last N 15m bars for analysis
-    const lookback = Math.min(i + 1, 300);
-    const m15Window = m15Klines.slice(i - lookback + 1, i + 1);
-
-    const signal = analyzeStrategy(relevantH1, m15Window);
-
-    if (signal.side !== 'none' && signal.riskPerUnit > 0) {
-      // Fixed $1000 margin per trade
-      const margin = 1000;
-      if (margin > balance) continue;
-      const notional = margin * leverage;
-      const qty = notional / price;
-
-      balance -= margin;
-      inPosition = true;
-      posSide = signal.side;
-      posEntry = price;
-      posSL = signal.stopLoss;
-      posTP = signal.takeProfit;
-      posQty = qty;
-      posMargin = margin;
-      posEntryTime = bar.time;
-      posRiskPerUnit = signal.riskPerUnit;
-      slMovedToBE = false;
-    }
+    return new Response(JSON.stringify({ status: 'ok', price: currentPrice }), { headers: corsHeaders });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
   }
-
-  // Close any open position at last price
-  if (inPosition) {
-    const lastPrice = m15Klines[m15Klines.length - 1].close;
-    const pnl = posSide === 'long'
-      ? (lastPrice - posEntry) * posQty
-      : (posEntry - lastPrice) * posQty;
-    balance += posMargin + pnl;
-    trades.push({
-      entryTime: posEntryTime, exitTime: m15Klines[m15Klines.length - 1].time,
-      side: posSide, entryPrice: posEntry, exitPrice: lastPrice,
-      sl: posSL, tp: posTP, pnl, pnlPct: (pnl / posMargin) * 100,
+});, tp: posTP, pnl, pnlPct: (pnl / posMargin) * 100,
       exitReason: 'End of data',
     });
     equityCurve.push({ time: m15Klines[m15Klines.length - 1].time, equity: balance });
