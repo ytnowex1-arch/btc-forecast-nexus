@@ -145,7 +145,7 @@ export default function BotDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [callBot, config]);
+  }, [callBot, config, showConfig]);
 
   useEffect(() => {
     fetchConfigs().then(() => setLoading(false));
