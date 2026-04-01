@@ -24,7 +24,7 @@ type View = 'analysis' | 'bot';
 
 export default function Index() {
   const [interval, setInterval] = useState('1h');
-  const [view, setView] = useState<View>('analysis');
+  const [view, setView] = useState<View>('bot');
   const projPeriods = INTERVALS.find(i => i.value === interval)?.projPeriods ?? 72;
 
   const { data: klines, isLoading, error } = useQuery({
