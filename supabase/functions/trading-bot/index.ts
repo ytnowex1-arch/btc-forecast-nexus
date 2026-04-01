@@ -330,17 +330,31 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
         if (bar.low <= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.high >= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // Trailing SL: 1% below current price, only tighten, never worse than entry
-          const trailingSL = price * 0.99;
-          if (trailingSL > posSL && trailingSL >= posEntry) posSL = trailingSL;
+          // ROI-based Trailing SL: activate at +10% ROI, keep 10% ROI gap
+          const btLeverage = leverage || 5;
+          const activationMove = 10 / btLeverage / 100;
+          const gapMove = 10 / btLeverage / 100;
+          const profitMove = (price - posEntry) / posEntry;
+          if (profitMove >= activationMove) {
+            const candidate = price * (1 - gapMove);
+            const locked = Math.max(posSL, candidate, posEntry * 1.001);
+            if (locked > posSL) posSL = locked;
+          }
         }
       } else {
         if (bar.high >= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.low <= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // Trailing SL: 1% above current price, only tighten, never worse than entry
-          const trailingSL = price * 1.01;
-          if (trailingSL < posSL && trailingSL <= posEntry) posSL = trailingSL;
+          // ROI-based Trailing SL for SHORT
+          const btLeverage = leverage || 5;
+          const activationMove = 10 / btLeverage / 100;
+          const gapMove = 10 / btLeverage / 100;
+          const profitMove = (posEntry - price) / posEntry;
+          if (profitMove >= activationMove) {
+            const candidate = price * (1 + gapMove);
+            const locked = Math.min(posSL, candidate, posEntry * 0.999);
+            if (locked < posSL) posSL = locked;
+          }
         }
       }
 
