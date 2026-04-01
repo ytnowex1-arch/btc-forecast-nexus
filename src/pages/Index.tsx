@@ -178,26 +178,6 @@ export default function Index() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* View switcher */}
-          <div className="flex rounded-md border border-border overflow-hidden">
-            <button
-              onClick={() => setView('analysis')}
-              className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
-                view === 'analysis' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              📊 Analiza
-            </button>
-            <button
-              onClick={() => setView('bot')}
-              className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
-                view === 'bot' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              🤖 Bot
-            </button>
-          </div>
-
           {/* 24h stats */}
           <div className="hidden md:flex items-center gap-4 text-xs font-mono text-muted-foreground">
             <div>
@@ -213,13 +193,6 @@ export default function Index() {
               <span className="text-foreground">{volume24h.toLocaleString('en-US', { maximumFractionDigits: 0 })} BTC</span>
             </div>
           </div>
-
-          {/* Interval selector — desktop only in header */}
-          {view === 'analysis' && (
-            <div className="hidden md:block">
-              <IntervalSelector />
-            </div>
-          )}
         </div>
       </motion.header>
 
