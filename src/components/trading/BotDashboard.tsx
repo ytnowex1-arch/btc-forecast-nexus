@@ -158,18 +158,19 @@ export default function BotDashboard() {
     return () => clearInterval(interval);
   }, [fetchStatus, config]);
 
-  // When active symbol changes, update editConfig
+  // When active symbol changes, update editConfig from DB values
   useEffect(() => {
-    if (config) {
+    const c = configs.find(c => c.symbol === activeSymbol);
+    if (c) {
       setEditConfig({
-        leverage: config.leverage,
-        position_size_pct: config.position_size_pct,
-        stop_loss_pct: config.stop_loss_pct,
-        take_profit_pct: config.take_profit_pct,
+        leverage: c.leverage,
+        position_size_pct: c.position_size_pct,
+        stop_loss_pct: c.stop_loss_pct,
+        take_profit_pct: c.take_profit_pct,
       });
       setBacktestResult(null);
     }
-  }, [activeSymbol, config]);
+  }, [activeSymbol]); // only on symbol change, not on config updates
 
   const toggleBot = async () => {
     if (!config) return;
