@@ -24,7 +24,7 @@ type View = 'analysis' | 'bot';
 
 export default function Index() {
   const [interval, setInterval] = useState('1h');
-  const [view, setView] = useState<View>('analysis');
+  const [view, setView] = useState<View>('bot');
   const projPeriods = INTERVALS.find(i => i.value === interval)?.projPeriods ?? 72;
 
   const { data: klines, isLoading, error } = useQuery({
@@ -178,26 +178,6 @@ export default function Index() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* View switcher */}
-          <div className="flex rounded-md border border-border overflow-hidden">
-            <button
-              onClick={() => setView('analysis')}
-              className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
-                view === 'analysis' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              📊 Analiza
-            </button>
-            <button
-              onClick={() => setView('bot')}
-              className={`px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
-                view === 'bot' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              🤖 Bot
-            </button>
-          </div>
-
           {/* 24h stats */}
           <div className="hidden md:flex items-center gap-4 text-xs font-mono text-muted-foreground">
             <div>
@@ -213,55 +193,10 @@ export default function Index() {
               <span className="text-foreground">{volume24h.toLocaleString('en-US', { maximumFractionDigits: 0 })} BTC</span>
             </div>
           </div>
-
-          {/* Interval selector — desktop only in header */}
-          {view === 'analysis' && (
-            <div className="hidden md:block">
-              <IntervalSelector />
-            </div>
-          )}
         </div>
       </motion.header>
 
-      {view === 'bot' ? (
-        <BotDashboard />
-      ) : (
-        <>
-          {isLoading || !klines || !indicators || !projection || !signalAnalysis ? (
-            <div className="flex items-center justify-center h-[400px]">
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm font-mono text-muted-foreground">Ładowanie danych z Binance...</span>
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Strategy Panel */}
-              {strategyResult && <StrategyPanel strategy={strategyResult} />}
-
-              <SignalDashboard
-                signals={signalAnalysis.signals}
-                confidence={signalAnalysis.confidence}
-                bias={signalAnalysis.bias}
-              />
-
-              {/* Interval selector — mobile only, above chart */}
-              <div className="md:hidden flex justify-center">
-                <IntervalSelector />
-              </div>
-
-              <PriceChart klines={klines} projection={projection} />
-
-              {/* Position Size Calculator */}
-              {currentPrice && dailyATR > 0 && (
-                <PositionSizeCalculator currentPrice={currentPrice} dailyATR={dailyATR} />
-              )}
-
-              <IndicatorPanels klines={klines} indicators={indicators} />
-            </>
-          )}
-        </>
-      )}
+      <BotDashboard />
 
       <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
         Dane z Binance API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M5 + Daily) •
