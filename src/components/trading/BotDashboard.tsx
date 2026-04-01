@@ -127,12 +127,15 @@ export default function BotDashboard() {
       const data = await callBot({ action: 'status', config_id: config.id });
       if (data.config) {
         setConfigs(prev => prev.map(c => c.id === data.config.id ? data.config : c));
-        setEditConfig({
-          leverage: data.config.leverage,
-          position_size_pct: data.config.position_size_pct,
-          stop_loss_pct: data.config.stop_loss_pct,
-          take_profit_pct: data.config.take_profit_pct,
-        });
+        // Only update editConfig if config panel is closed
+        if (!showConfig) {
+          setEditConfig({
+            leverage: data.config.leverage,
+            position_size_pct: data.config.position_size_pct,
+            stop_loss_pct: data.config.stop_loss_pct,
+            take_profit_pct: data.config.take_profit_pct,
+          });
+        }
       }
       if (data.positions) setPositions(data.positions);
       if (data.trades) setTrades(data.trades);
@@ -142,7 +145,7 @@ export default function BotDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [callBot, config]);
+  }, [callBot, config, showConfig]);
 
   useEffect(() => {
     fetchConfigs().then(() => setLoading(false));
@@ -155,18 +158,19 @@ export default function BotDashboard() {
     return () => clearInterval(interval);
   }, [fetchStatus, config]);
 
-  // When active symbol changes, update editConfig
+  // When active symbol changes, update editConfig from DB values
   useEffect(() => {
-    if (config) {
+    const c = configs.find(c => c.symbol === activeSymbol);
+    if (c) {
       setEditConfig({
-        leverage: config.leverage,
-        position_size_pct: config.position_size_pct,
-        stop_loss_pct: config.stop_loss_pct,
-        take_profit_pct: config.take_profit_pct,
+        leverage: c.leverage,
+        position_size_pct: c.position_size_pct,
+        stop_loss_pct: c.stop_loss_pct,
+        take_profit_pct: c.take_profit_pct,
       });
       setBacktestResult(null);
     }
-  }, [activeSymbol, config]);
+  }, [activeSymbol]); // only on symbol change, not on config updates
 
   const toggleBot = async () => {
     if (!config) return;
