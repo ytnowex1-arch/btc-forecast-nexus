@@ -196,45 +196,7 @@ export default function Index() {
         </div>
       </motion.header>
 
-      {view === 'bot' ? (
-        <BotDashboard />
-      ) : (
-        <>
-          {isLoading || !klines || !indicators || !projection || !signalAnalysis ? (
-            <div className="flex items-center justify-center h-[400px]">
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm font-mono text-muted-foreground">Ładowanie danych z Binance...</span>
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Strategy Panel */}
-              {strategyResult && <StrategyPanel strategy={strategyResult} />}
-
-              <SignalDashboard
-                signals={signalAnalysis.signals}
-                confidence={signalAnalysis.confidence}
-                bias={signalAnalysis.bias}
-              />
-
-              {/* Interval selector — mobile only, above chart */}
-              <div className="md:hidden flex justify-center">
-                <IntervalSelector />
-              </div>
-
-              <PriceChart klines={klines} projection={projection} />
-
-              {/* Position Size Calculator */}
-              {currentPrice && dailyATR > 0 && (
-                <PositionSizeCalculator currentPrice={currentPrice} dailyATR={dailyATR} />
-              )}
-
-              <IndicatorPanels klines={klines} indicators={indicators} />
-            </>
-          )}
-        </>
-      )}
+      <BotDashboard />
 
       <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
         Dane z Binance API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M5 + Daily) •
