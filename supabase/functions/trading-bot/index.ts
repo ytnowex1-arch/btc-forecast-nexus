@@ -330,17 +330,31 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
         if (bar.low <= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.high >= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // Trailing SL: 1% below current price, only tighten, never worse than entry
-          const trailingSL = price * 0.99;
-          if (trailingSL > posSL && trailingSL >= posEntry) posSL = trailingSL;
+          // ROI-based Trailing SL: activate at +10% ROI, keep 10% ROI gap
+          const btLeverage = leverage || 5;
+          const activationMove = 10 / btLeverage / 100;
+          const gapMove = 10 / btLeverage / 100;
+          const profitMove = (price - posEntry) / posEntry;
+          if (profitMove >= activationMove) {
+            const candidate = price * (1 - gapMove);
+            const locked = Math.max(posSL, candidate, posEntry * 1.001);
+            if (locked > posSL) posSL = locked;
+          }
         }
       } else {
         if (bar.high >= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.low <= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // Trailing SL: 1% above current price, only tighten, never worse than entry
-          const trailingSL = price * 1.01;
-          if (trailingSL < posSL && trailingSL <= posEntry) posSL = trailingSL;
+          // ROI-based Trailing SL for SHORT
+          const btLeverage = leverage || 5;
+          const activationMove = 10 / btLeverage / 100;
+          const gapMove = 10 / btLeverage / 100;
+          const profitMove = (posEntry - price) / posEntry;
+          if (profitMove >= activationMove) {
+            const candidate = price * (1 + gapMove);
+            const locked = Math.min(posSL, candidate, posEntry * 0.999);
+            if (locked < posSL) posSL = locked;
+          }
         }
       }
 
@@ -688,23 +702,37 @@ serve(async (req) => {
         continue;
       }
 
-      // Trailing SL: always 1% from current price (only tighten, never loosen)
-      // IMPORTANT: Never trail SL to a worse position than entry (break-even protection)
-      if (pos.side === 'long') {
-        const trailingSL = currentPrice * 0.99; // 1% below current price
-        // Only trail if: 1) tighter than current SL, 2) at least break-even (>= entry)
-        if (trailingSL > currentSL && trailingSL >= entryPrice) {
-          await supabase.from('bot_positions').update({ stop_loss: trailingSL }).eq('id', pos.id);
+      // === ROI-BASED TRAILING SL ===
+      // Activate after +10% ROI, keep SL 10% ROI behind current price
+      // One-way lock: SL can only tighten (move in profitable direction), NEVER loosen
+      const leverage = Number(pos.leverage || config.leverage);
+      const TRAIL_ACTIVATION_ROI = 10; // start trailing after +10% ROI
+      const TRAIL_GAP_ROI = 10; // keep SL 10% ROI behind
+      const sideMul = pos.side === 'long' ? 1 : -1;
+      const activationMovePct = TRAIL_ACTIVATION_ROI / leverage / 100; // price move % needed
+      const gapMovePct = TRAIL_GAP_ROI / leverage / 100; // SL gap as price move %
+      const inProfitMovePct = ((currentPrice - entryPrice) / entryPrice) * sideMul;
+      const currentROI = inProfitMovePct * leverage * 100;
+
+      if (inProfitMovePct >= activationMovePct) {
+        const candidateSl = pos.side === 'long'
+          ? currentPrice * (1 - gapMovePct)
+          : currentPrice * (1 + gapMovePct);
+
+        // One-way lock: for LONG, SL can only go UP; for SHORT, SL can only go DOWN
+        // Also ensure SL is at least at break-even (entry + tiny buffer)
+        const lockedSl = pos.side === 'long'
+          ? Math.max(currentSL, candidateSl, entryPrice * 1.001)
+          : Math.min(currentSL, candidateSl, entryPrice * 0.999);
+
+        const shouldUpdate = pos.side === 'long'
+          ? lockedSl > currentSL
+          : lockedSl < currentSL;
+
+        if (shouldUpdate) {
+          await supabase.from('bot_positions').update({ stop_loss: lockedSl }).eq('id', pos.id);
           await logBot(supabase, config.id, 'info',
-            `🔒 TRAIL SL: LONG SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% below $${currentPrice.toFixed(0)})`);
-        }
-      } else {
-        const trailingSL = currentPrice * 1.01; // 1% above current price
-        // Only trail if: 1) tighter than current SL, 2) at least break-even (<= entry)
-        if (trailingSL < currentSL && trailingSL <= entryPrice) {
-          await supabase.from('bot_positions').update({ stop_loss: trailingSL }).eq('id', pos.id);
-          await logBot(supabase, config.id, 'info',
-            `🔒 TRAIL SL: SHORT SL $${currentSL.toFixed(0)} → $${trailingSL.toFixed(0)} (1% above $${currentPrice.toFixed(0)})`);
+            `🔒 TRAIL SL: ${pos.side.toUpperCase()} ROI ${currentROI.toFixed(1)}% | SL $${currentSL.toFixed(0)} → $${lockedSl.toFixed(0)} (${TRAIL_GAP_ROI}% ROI gap)`);
         }
       }
     }
