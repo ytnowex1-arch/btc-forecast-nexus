@@ -30,50 +30,50 @@ export default function Index() {
   const { data: klines, isLoading, error } = useQuery({
     queryKey: ['klines', interval],
     queryFn: () => fetchKlines('BTCUSDT', interval, 500),
-    refetchInterval: 30000,
-    staleTime: 15000,
+    refetchInterval: 1000,
+    staleTime: 1000,
   });
 
   const { data: stats } = useQuery({
     queryKey: ['stats'],
     queryFn: () => fetch24hStats('BTCUSDT'),
-    refetchInterval: 10000,
+    refetchInterval: 1000,
   });
 
   // Multi-timeframe data
   const { data: h1Klines } = useQuery({
     queryKey: ['klines', '1h', 'strategy'],
     queryFn: () => fetchKlines('BTCUSDT', '1h', 300),
-    refetchInterval: 60000,
-    staleTime: 30000,
+    refetchInterval: 1000,
+    staleTime: 1000,
   });
 
   const { data: m5Klines } = useQuery({
     queryKey: ['klines', '5m', 'strategy'],
     queryFn: () => fetchKlines('BTCUSDT', '5m', 300),
-    refetchInterval: 30000,
-    staleTime: 15000,
+    refetchInterval: 1000,
+    staleTime: 1000,
   });
 
   const { data: m15Klines } = useQuery({
     queryKey: ['klines', '15m', 'projection'],
     queryFn: () => fetchKlines('BTCUSDT', '15m', 300),
-    refetchInterval: 60000,
-    staleTime: 30000,
+    refetchInterval: 1000,
+    staleTime: 1000,
   });
 
   const { data: h4Klines } = useQuery({
     queryKey: ['klines', '4h', 'projection'],
     queryFn: () => fetchKlines('BTCUSDT', '4h', 300),
-    refetchInterval: 120000,
-    staleTime: 60000,
+    refetchInterval: 1000,
+    staleTime: 1000,
   });
 
   const { data: dailyKlines } = useQuery({
     queryKey: ['klines', '1d', 'strategy'],
     queryFn: () => fetchKlines('BTCUSDT', '1d', 30),
-    refetchInterval: 300000,
-    staleTime: 60000,
+    refetchInterval: 1000,
+    staleTime: 1000,
   });
 
   const indicators = useMemo(() => {
