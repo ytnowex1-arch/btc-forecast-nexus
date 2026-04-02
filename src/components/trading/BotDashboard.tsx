@@ -445,9 +445,10 @@ export default function BotDashboard() {
             const qty = Number(pos.quantity);
             const margin = Number(pos.margin_used);
             const notional = entry * qty;
+            // Trailing detected: SL moved past entry (break-even or better)
             const slMoved = pos.side === 'long'
-              ? sl > entry * (1 - Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 1.005
-              : sl < entry * (1 + Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 0.995;
+              ? sl > entry * 1.0005
+              : sl < entry * 0.9995;
 
             // Unrealized P&L
             const uPnl = currentPrice
