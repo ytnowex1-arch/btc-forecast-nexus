@@ -165,6 +165,28 @@ export default function BotDashboard() {
     fetchConfigs().then(() => setLoading(false));
   }, [fetchConfigs]);
 
+  // Realtime logs subscription
+  useEffect(() => {
+    if (!config) return;
+    const channel = supabase
+      .channel(`bot_logs_${config.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'bot_logs',
+          filter: `bot_config_id=eq.${config.id}`,
+        },
+        (payload) => {
+          const newLog = payload.new as LogEntry;
+          setLogs(prev => [newLog, ...prev].slice(0, 100));
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [config?.id]);
+
   useEffect(() => {
     if (!config) return;
     fetchStatus();
