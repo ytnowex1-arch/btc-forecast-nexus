@@ -147,6 +147,20 @@ export default function BotDashboard() {
     }
   }, [callBot, config, showConfig]);
 
+  // Trail poll: lightweight SL/TP/trailing check every 5 seconds
+  const trailPoll = useCallback(async () => {
+    if (!config) return;
+    try {
+      const data = await callBot({ action: 'trail', config_id: config.id });
+      if (data.config) {
+        setConfigs(prev => prev.map(c => c.id === data.config.id ? data.config : c));
+      }
+      if (data.positions) setPositions(data.positions);
+      if (data.trades) setTrades(data.trades);
+      if (data.logs) setLogs(data.logs);
+    } catch (e) { /* ignore trail errors */ }
+  }, [callBot, config]);
+
   useEffect(() => {
     fetchConfigs().then(() => setLoading(false));
   }, [fetchConfigs]);
@@ -154,9 +168,11 @@ export default function BotDashboard() {
   useEffect(() => {
     if (!config) return;
     fetchStatus();
-    const interval = setInterval(fetchStatus, 30000);
-    return () => clearInterval(interval);
-  }, [fetchStatus, config]);
+    const statusIv = setInterval(fetchStatus, 30000);
+    // Fast trail SL polling every 5 seconds when bot has open positions or is active
+    const trailIv = setInterval(trailPoll, 5000);
+    return () => { clearInterval(statusIv); clearInterval(trailIv); };
+  }, [fetchStatus, trailPoll, config]);
 
   // When active symbol changes, update editConfig from DB values
   useEffect(() => {
@@ -429,9 +445,10 @@ export default function BotDashboard() {
             const qty = Number(pos.quantity);
             const margin = Number(pos.margin_used);
             const notional = entry * qty;
+            // Trailing detected: SL moved past entry (break-even or better)
             const slMoved = pos.side === 'long'
-              ? sl > entry * (1 - Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 1.005
-              : sl < entry * (1 + Number(config?.stop_loss_pct ?? 3) / 100 / Number(pos.leverage)) * 0.995;
+              ? sl > entry * 1.0005
+              : sl < entry * 0.9995;
 
             // Unrealized P&L
             const uPnl = currentPrice
