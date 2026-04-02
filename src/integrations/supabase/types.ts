@@ -225,6 +225,78 @@ export type Database = {
           },
         ]
       }
+      telegram_bot_state: {
+        Row: {
+          id: number
+          update_offset: number
+          updated_at: string
+        }
+        Insert: {
+          id: number
+          update_offset?: number
+          updated_at?: string
+        }
+        Update: {
+          id?: number
+          update_offset?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      telegram_user_links: {
+        Row: {
+          chat_id: number
+          created_at: string
+          is_active: boolean
+          telegram_id: string
+          updated_at: string
+          username: string | null
+        }
+        Insert: {
+          chat_id: number
+          created_at?: string
+          is_active?: boolean
+          telegram_id: string
+          updated_at?: string
+          username?: string | null
+        }
+        Update: {
+          chat_id?: number
+          created_at?: string
+          is_active?: boolean
+          telegram_id?: string
+          updated_at?: string
+          username?: string | null
+        }
+        Relationships: []
+      }
+      users_profile: {
+        Row: {
+          created_at: string
+          last_seen_at: string
+          telegram_id: string
+          updated_at: string
+          user_settings: Json
+          username: string | null
+        }
+        Insert: {
+          created_at?: string
+          last_seen_at?: string
+          telegram_id: string
+          updated_at?: string
+          user_settings?: Json
+          username?: string | null
+        }
+        Update: {
+          created_at?: string
+          last_seen_at?: string
+          telegram_id?: string
+          updated_at?: string
+          user_settings?: Json
+          username?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
