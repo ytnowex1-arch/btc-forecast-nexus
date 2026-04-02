@@ -2,3 +2,9 @@ project_id = "maxeahbntaoedqnrjfyu"
 
 [functions.trading-bot]
 verify_jwt = false
+
+[functions.telegram-mini-app]
+verify_jwt = false
+
+[functions.telegram-poll]
+verify_jwt = false

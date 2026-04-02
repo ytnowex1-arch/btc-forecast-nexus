@@ -7,6 +7,8 @@ const corsHeaders = {
 };
 
 const BINANCE_URL = 'https://data-api.binance.vision/api/v3';
+const TELEGRAM_API_BASE = 'https://api.telegram.org';
+const TELEGRAM_WEBAPP_URL = 'https://btc-forecast-nexus.lovable.app';
 
 interface Kline {
   time: number; open: number; high: number; low: number; close: number; volume: number;
@@ -24,6 +26,60 @@ async function fetchCurrentPrice(symbol: string): Promise<number> {
   const res = await fetch(`${BINANCE_URL}/ticker/price?symbol=${symbol}`);
   const data = await res.json();
   return parseFloat(data.price);
+}
+
+async function callTelegram(method: string, payload: Record<string, unknown>) {
+  const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN');
+  if (!botToken) return null;
+
+  const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data?.ok) {
+    console.error(`Telegram ${method} failed`, data);
+    return null;
+  }
+
+  return data;
+}
+
+async function notifyLinkedTelegramUsers(supabase: any, symbol: string, text: string) {
+  if (symbol !== 'BTCUSDT') return;
+
+  const { data: links, error } = await supabase
+    .from('telegram_user_links')
+    .select('chat_id')
+    .eq('is_active', true);
+
+  if (error || !links?.length) {
+    if (error) {
+      console.error('Failed to load Telegram user links', error);
+    }
+    return;
+  }
+
+  await Promise.allSettled(
+    links.map((link: { chat_id: number }) =>
+      callTelegram('sendMessage', {
+        chat_id: link.chat_id,
+        text,
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: '🚀 Otwórz Mini App',
+              web_app: { url: TELEGRAM_WEBAPP_URL },
+            },
+          ]],
+        },
+      })
+    )
+  );
 }
 
 // ========== INDICATORS ==========
@@ -563,6 +619,11 @@ serve(async (req) => {
               closed_at: new Date().toISOString(), exit_reason: 'Liquidation',
             }).eq('id', pos.id);
             await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} | PnL: -$${margin.toFixed(2)}`);
+            await notifyLinkedTelegramUsers(
+              supabase,
+              config.symbol,
+              `⚠️ BTC LIQUIDATION\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: -$${margin.toFixed(2)}`,
+            );
             continue;
           }
 
@@ -583,6 +644,11 @@ serve(async (req) => {
               reason: `Trail SL hit at $${currentPrice.toFixed(2)}`,
             });
             await logBot(supabase, config.id, 'trade', `🛑 TRAIL SL HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+            await notifyLinkedTelegramUsers(
+              supabase,
+              config.symbol,
+              `🛑 BTC Trail SL\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
+            );
             continue;
           }
 
@@ -603,6 +669,11 @@ serve(async (req) => {
               reason: `Take Profit at $${currentPrice.toFixed(2)}`,
             });
             await logBot(supabase, config.id, 'trade', `🎯 TP HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+            await notifyLinkedTelegramUsers(
+              supabase,
+              config.symbol,
+              `🎯 BTC Take Profit\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
+            );
             continue;
           }
 
@@ -783,6 +854,11 @@ serve(async (req) => {
           closed_at: new Date().toISOString(), exit_reason: 'Liquidation',
         }).eq('id', pos.id);
         await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} | PnL: -$${margin.toFixed(2)}`);
+        await notifyLinkedTelegramUsers(
+          supabase,
+          config.symbol,
+          `⚠️ BTC LIQUIDATION\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: -$${margin.toFixed(2)}`,
+        );
         continue;
       }
 
@@ -802,6 +878,11 @@ serve(async (req) => {
           reason: `Stop Loss at $${currentPrice.toFixed(2)}`,
         });
         await logBot(supabase, config.id, 'trade', `🛑 SL HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+        await notifyLinkedTelegramUsers(
+          supabase,
+          config.symbol,
+          `🛑 BTC Stop Loss\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
+        );
         continue;
       }
 
@@ -821,6 +902,11 @@ serve(async (req) => {
           reason: `Take Profit at $${currentPrice.toFixed(2)}`,
         });
         await logBot(supabase, config.id, 'trade', `🎯 TP HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+        await notifyLinkedTelegramUsers(
+          supabase,
+          config.symbol,
+          `🎯 BTC Take Profit\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
+        );
         continue;
       }
 
@@ -915,6 +1001,11 @@ serve(async (req) => {
           await logBot(supabase, config.id, 'trade',
             `📈 ${signal.side.toUpperCase()} @ $${currentPrice.toFixed(2)} | Qty: ${qty.toFixed(6)} | SL: $${signal.stopLoss.toFixed(0)} | TP: $${signal.takeProfit.toFixed(0)} | R:R 1:2 | Risk: $${riskAmount.toFixed(2)}`);
           await logBot(supabase, config.id, 'info', `🧠 ${entryReason}`);
+          await notifyLinkedTelegramUsers(
+            supabase,
+            config.symbol,
+            `📊 BTC analiza\nSygnał: ${signal.side.toUpperCase()}\nWejście: $${currentPrice.toFixed(2)}\nSL: $${signal.stopLoss.toFixed(2)}\nTP: $${signal.takeProfit.toFixed(2)}`,
+          );
         }
       }
     } else if (signal.side === 'none' && (!remainingOpen || remainingOpen.length === 0)) {
