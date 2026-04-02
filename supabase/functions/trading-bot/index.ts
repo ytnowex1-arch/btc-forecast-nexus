@@ -533,6 +533,128 @@ serve(async (req) => {
         });
       }
 
+      // Trail: lightweight action — only manage open positions (SL/TP/trailing), no strategy analysis
+      if (action === 'trail') {
+        const currentPrice = await fetchCurrentPrice(config.symbol);
+        const { data: openPositions } = await supabase.from('bot_positions')
+          .select('*').eq('bot_config_id', config.id).eq('status', 'open');
+
+        let balance = Number(config.current_balance);
+        let changed = false;
+
+        for (const pos of openPositions || []) {
+          const entryPrice = Number(pos.entry_price);
+          const qty = Number(pos.quantity);
+          const margin = Number(pos.margin_used);
+          const currentSL = Number(pos.stop_loss);
+          const currentTP = Number(pos.take_profit);
+
+          const pnl = pos.side === 'long'
+            ? (currentPrice - entryPrice) * qty
+            : (entryPrice - currentPrice) * qty;
+          const pnlPct = (pnl / margin) * 100;
+
+          // Liquidation check
+          if (pnlPct <= -90) {
+            balance -= margin;
+            changed = true;
+            await supabase.from('bot_positions').update({
+              status: 'liquidated', exit_price: currentPrice, pnl: -margin, pnl_pct: -100,
+              closed_at: new Date().toISOString(), exit_reason: 'Liquidation',
+            }).eq('id', pos.id);
+            await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} | PnL: -$${margin.toFixed(2)}`);
+            continue;
+          }
+
+          // Stop Loss
+          if (currentSL && (
+            (pos.side === 'long' && currentPrice <= currentSL) ||
+            (pos.side === 'short' && currentPrice >= currentSL)
+          )) {
+            balance += margin + pnl;
+            changed = true;
+            await supabase.from('bot_positions').update({
+              status: 'closed', exit_price: currentPrice, pnl, pnl_pct: pnlPct,
+              closed_at: new Date().toISOString(), exit_reason: 'Stop Loss (trail)',
+            }).eq('id', pos.id);
+            await supabase.from('bot_trades').insert({
+              bot_config_id: config.id, position_id: pos.id, action: 'stop_loss',
+              price: currentPrice, quantity: qty, pnl, balance_after: balance,
+              reason: `Trail SL hit at $${currentPrice.toFixed(2)}`,
+            });
+            await logBot(supabase, config.id, 'trade', `🛑 TRAIL SL HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+            continue;
+          }
+
+          // Take Profit
+          if (currentTP && (
+            (pos.side === 'long' && currentPrice >= currentTP) ||
+            (pos.side === 'short' && currentPrice <= currentTP)
+          )) {
+            balance += margin + pnl;
+            changed = true;
+            await supabase.from('bot_positions').update({
+              status: 'closed', exit_price: currentPrice, pnl, pnl_pct: pnlPct,
+              closed_at: new Date().toISOString(), exit_reason: 'Take Profit',
+            }).eq('id', pos.id);
+            await supabase.from('bot_trades').insert({
+              bot_config_id: config.id, position_id: pos.id, action: 'take_profit',
+              price: currentPrice, quantity: qty, pnl, balance_after: balance,
+              reason: `Take Profit at $${currentPrice.toFixed(2)}`,
+            });
+            await logBot(supabase, config.id, 'trade', `🎯 TP HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+            continue;
+          }
+
+          // ROI-based Trailing SL
+          const leverage = Number(pos.leverage || config.leverage);
+          const TRAIL_ACTIVATION_ROI = 10;
+          const TRAIL_GAP_ROI = 10;
+          const sideMul = pos.side === 'long' ? 1 : -1;
+          const activationMovePct = TRAIL_ACTIVATION_ROI / leverage / 100;
+          const gapMovePct = TRAIL_GAP_ROI / leverage / 100;
+          const inProfitMovePct = ((currentPrice - entryPrice) / entryPrice) * sideMul;
+          const currentROI = inProfitMovePct * leverage * 100;
+
+          if (inProfitMovePct >= activationMovePct) {
+            const candidateSl = pos.side === 'long'
+              ? currentPrice * (1 - gapMovePct)
+              : currentPrice * (1 + gapMovePct);
+
+            const lockedSl = pos.side === 'long'
+              ? Math.max(currentSL, candidateSl, entryPrice * 1.001)
+              : Math.min(currentSL, candidateSl, entryPrice * 0.999);
+
+            const shouldUpdate = pos.side === 'long'
+              ? lockedSl > currentSL
+              : lockedSl < currentSL;
+
+            if (shouldUpdate) {
+              await supabase.from('bot_positions').update({ stop_loss: lockedSl }).eq('id', pos.id);
+              await logBot(supabase, config.id, 'info',
+                `🔒 TRAIL SL: ${pos.side.toUpperCase()} ROI ${currentROI.toFixed(1)}% | SL $${currentSL.toFixed(0)} → $${lockedSl.toFixed(0)} (${TRAIL_GAP_ROI}% ROI gap)`);
+            }
+          }
+        }
+
+        if (changed) {
+          await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
+        }
+
+        // Return updated data
+        const { data: positions } = await supabase.from('bot_positions')
+          .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
+        const { data: trades } = await supabase.from('bot_trades')
+          .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(50);
+        const { data: logs } = await supabase.from('bot_logs')
+          .select('*').eq('bot_config_id', config.id).order('created_at', { ascending: false }).limit(30);
+
+        const updatedConfig = changed ? { ...config, current_balance: balance } : config;
+        return new Response(JSON.stringify({ config: updatedConfig, positions, trades, logs, executed: false, trail: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
       if (action === 'toggle') {
         await supabase.from('bot_config').update({ is_active: !config.is_active }).eq('id', config.id);
         return new Response(JSON.stringify({ is_active: !config.is_active }), {
