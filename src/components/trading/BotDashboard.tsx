@@ -90,7 +90,7 @@ export default function BotDashboard() {
       } catch (e) { /* ignore */ }
     };
     fetchPrices();
-    const iv = setInterval(fetchPrices, 1000);
+    const iv = setInterval(fetchPrices, 2000);
     return () => clearInterval(iv);
   }, []);
 
@@ -190,9 +190,9 @@ export default function BotDashboard() {
   useEffect(() => {
     if (!config) return;
     fetchStatus();
-    const statusIv = setInterval(fetchStatus, 1000);
+    const statusIv = setInterval(fetchStatus, 30000);
     // Fast trail SL polling every 5 seconds when bot has open positions or is active
-    const trailIv = setInterval(trailPoll, 1000);
+    const trailIv = setInterval(trailPoll, 5000);
     return () => { clearInterval(statusIv); clearInterval(trailIv); };
   }, [fetchStatus, trailPoll, config]);
 
