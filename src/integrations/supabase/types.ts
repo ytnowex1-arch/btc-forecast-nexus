@@ -302,7 +302,8 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      poll_telegram_mini_app_updates: { Args: never; Returns: undefined }
+      run_active_trading_bots: { Args: never; Returns: undefined }
     }
     Enums: {
       [_ in never]: never
