@@ -63,7 +63,7 @@ const SYMBOL_LABELS: Record<string, string> = {
 
 export default function BotDashboard() {
   const [configs, setConfigs] = useState<BotConfig[]>([]);
-  const [activeSymbol, setActiveSymbol] = useState<string>('BTCUSDT');
+  const [activeSymbol, setActiveSymbol] = useState<string>('BTC_USDT');
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
