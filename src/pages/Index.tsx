@@ -29,14 +29,14 @@ export default function Index() {
 
   const { data: klines, isLoading, error } = useQuery({
     queryKey: ['klines', interval],
-    queryFn: () => fetchKlines('BTCUSDT', interval, 500),
+    queryFn: () => fetchKlines('BTC_USDT', interval, 500),
     refetchInterval: 30000,
     staleTime: 15000,
   });
 
   const { data: stats } = useQuery({
     queryKey: ['stats'],
-    queryFn: () => fetch24hStats('BTCUSDT'),
+    queryFn: () => fetch24hStats('BTC_USDT'),
     refetchInterval: 10000,
   });
 
