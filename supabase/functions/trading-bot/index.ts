@@ -6,76 +6,84 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BINANCE_URL = 'https://data-api.binance.vision/api/v3';
+const MEXC_BASE = 'https://contract.mexc.com/api/v1/contract';
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const TELEGRAM_WEBAPP_URL = 'https://btc-forecast-nexus.lovable.app';
+
+const MEXC_INTERVALS: Record<string, string> = {
+  '5m': 'Min5', '15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1', '1w': 'Week1',
+};
 
 interface Kline {
   time: number; open: number; high: number; low: number; close: number; volume: number;
 }
 
 async function fetchKlines(symbol: string, interval: string, limit = 500): Promise<Kline[]> {
-  const res = await fetch(`${BINANCE_URL}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
-  const data = await res.json();
-  return data.map((k: any[]) => ({
-    time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5],
-  }));
+  const mexcInterval = MEXC_INTERVALS[interval] || 'Min60';
+  const intervalSeconds: Record<string, number> = {
+    '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800,
+  };
+  const seconds = intervalSeconds[interval] || 3600;
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - (limit * seconds);
+
+  const res = await fetch(`${MEXC_BASE}/kline/${symbol}?interval=${mexcInterval}&start=${start}&end=${end}`);
+  const json = await res.json();
+  if (!json.success) throw new Error(`MEXC kline error: ${json.code}`);
+
+  const data = json.data;
+  const times: number[] = data.time || [];
+  const opens: number[] = data.open || [];
+  const highs: number[] = data.high || [];
+  const lows: number[] = data.low || [];
+  const closes: number[] = data.close || [];
+  const vols: number[] = data.vol || [];
+
+  const klines: Kline[] = [];
+  const count = Math.min(times.length, limit);
+  const startIdx = Math.max(0, times.length - count);
+  for (let i = startIdx; i < times.length; i++) {
+    klines.push({ time: times[i], open: opens[i], high: highs[i], low: lows[i], close: closes[i], volume: vols[i] });
+  }
+  return klines;
 }
 
 async function fetchCurrentPrice(symbol: string): Promise<number> {
-  const res = await fetch(`${BINANCE_URL}/ticker/price?symbol=${symbol}`);
-  const data = await res.json();
-  return parseFloat(data.price);
+  const res = await fetch(`${MEXC_BASE}/ticker?symbol=${symbol}`);
+  const json = await res.json();
+  if (!json.success) throw new Error(`MEXC ticker error: ${json.code}`);
+  return json.data.lastPrice;
 }
 
 async function callTelegram(method: string, payload: Record<string, unknown>) {
   const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN');
   if (!botToken) return null;
-
   const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-
   const data = await response.json().catch(() => null);
   if (!response.ok || !data?.ok) {
     console.error(`Telegram ${method} failed`, data);
     return null;
   }
-
   return data;
 }
 
 async function notifyLinkedTelegramUsers(supabase: any, symbol: string, text: string) {
-  if (symbol !== 'BTCUSDT') return;
-
   const { data: links, error } = await supabase
     .from('telegram_user_links')
     .select('chat_id')
     .eq('is_active', true);
-
-  if (error || !links?.length) {
-    if (error) {
-      console.error('Failed to load Telegram user links', error);
-    }
-    return;
-  }
-
+  if (error || !links?.length) return;
   await Promise.allSettled(
     links.map((link: { chat_id: number }) =>
       callTelegram('sendMessage', {
         chat_id: link.chat_id,
         text,
         reply_markup: {
-          inline_keyboard: [[
-            {
-              text: '🚀 Otwórz Mini App',
-              web_app: { url: TELEGRAM_WEBAPP_URL },
-            },
-          ]],
+          inline_keyboard: [[{ text: '🚀 Otwórz Mini App', web_app: { url: TELEGRAM_WEBAPP_URL } }]],
         },
       })
     )
@@ -86,9 +94,7 @@ async function notifyLinkedTelegramUsers(supabase: any, symbol: string, text: st
 function calcEMA(data: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const ema: number[] = [data[0]];
-  for (let i = 1; i < data.length; i++) {
-    ema.push(data[i] * k + ema[i - 1] * (1 - k));
-  }
+  for (let i = 1; i < data.length; i++) ema.push(data[i] * k + ema[i - 1] * (1 - k));
   return ema;
 }
 
@@ -96,8 +102,7 @@ function calcSMA(data: number[], period: number): number[] {
   const sma: number[] = [];
   for (let i = 0; i < data.length; i++) {
     if (i < period - 1) { sma.push(NaN); continue; }
-    const sum = data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
-    sma.push(sum / period);
+    sma.push(data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period);
   }
   return sma;
 }
@@ -147,7 +152,6 @@ function calcATR(highs: number[], lows: number[], closes: number[], period = 14)
   return calcEMA(tr, period);
 }
 
-// ========== SWING HIGH/LOW ==========
 function findSwingLow(lows: number[], lookback = 10): number {
   const start = Math.max(0, lows.length - lookback);
   return Math.min(...lows.slice(start, lows.length));
@@ -178,8 +182,6 @@ interface StrategySignal {
 
 function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal {
   const reasoning: string[] = [];
-
-  // === 1H TREND FILTER: EMA 200 ===
   const h1Closes = h1Klines.map(k => k.close);
   const h1Ema200 = calcEMA(h1Closes, 200);
   const h1Last = h1Closes.length - 1;
@@ -188,11 +190,9 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
   const trendBias = h1Price > h1Ema200Val ? 'bullish' : 'bearish';
   reasoning.push(`1H: $${h1Price.toFixed(0)} ${trendBias === 'bullish' ? '>' : '<'} EMA200 $${h1Ema200Val.toFixed(0)} → ${trendBias.toUpperCase()}`);
 
-  // === 15M INDICATORS ===
   const closes = m15Klines.map(k => k.close);
   const highs = m15Klines.map(k => k.high);
   const lows = m15Klines.map(k => k.low);
-  const volumes = m15Klines.map(k => k.volume);
   const last = closes.length - 1;
   const price = closes[last];
 
@@ -215,25 +215,16 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
   const prevMacdSig = macd.signalLine[last - 1];
   const stochVal = stoch[last];
 
-  // === ATR VOLATILITY FILTER ===
   const atrRatio = atr50Val > 0 ? atr14Val / atr50Val : 1;
   const atrBlocked = atrRatio > 2;
-  if (atrBlocked) {
-    reasoning.push(`🚫 ATR BLOCK: ATR14/ATR50 = ${atrRatio.toFixed(2)} > 2`);
-  }
+  if (atrBlocked) reasoning.push(`🚫 ATR BLOCK: ATR14/ATR50 = ${atrRatio.toFixed(2)} > 2`);
 
   const volumeOk = true;
-
-  // === EMA STRUCTURE + SLOPE ===
   const emaLongSetup = ema20Val > ema50Val;
   const emaShortSetup = ema20Val < ema50Val;
-  // EMA20 slope: must be moving in trend direction
   const ema20Slope = ema20[last] - ema20[last - 3];
-  const ema20SlopeLong = ema20Slope > 0;
-  const ema20SlopeShort = ema20Slope < 0;
   reasoning.push(`EMA20: $${ema20Val.toFixed(0)} | EMA50: $${ema50Val.toFixed(0)} | Slope: ${ema20Slope > 0 ? '↑' : '↓'} → ${emaLongSetup ? 'LONG' : emaShortSetup ? 'SHORT' : 'FLAT'}`);
 
-  // === PULLBACK DETECTION (tighter: 0.15% to EMA20 or between EMAs) ===
   const pullbackToEma20 = Math.abs(price - ema20Val) / price < 0.0015;
   const pullbackBetween = emaLongSetup
     ? (price <= ema20Val * 1.0005 && price >= ema50Val * 0.999)
@@ -241,20 +232,13 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
   const pullbackDetected = pullbackToEma20 || pullbackBetween;
   reasoning.push(`Pullback: ${pullbackDetected ? '✅' : '❌'} (EMA20: ${pullbackToEma20}, between: ${pullbackBetween})`);
 
-  // === MACD CHECK ===
   const macdBullCross = prevMacd <= prevMacdSig && macdVal > macdSig;
   const macdBearCross = prevMacd >= prevMacdSig && macdVal < macdSig;
   const macdBullish = macdVal > macdSig;
-  const macdBearish = macdVal < macdSig;
   reasoning.push(`MACD: ${macdVal.toFixed(1)} vs Sig: ${macdSig.toFixed(1)} → ${macdBullish ? 'BULL' : 'BEAR'}${macdBullCross ? ' (CROSS↑)' : macdBearCross ? ' (CROSS↓)' : ''}`);
-
-  // === STOCHASTIC CHECK ===
   reasoning.push(`Stoch: ${stochVal?.toFixed(1) || 'N/A'}`);
-
-  // === RSI CHECK ===
   reasoning.push(`RSI(14): ${rsiVal.toFixed(1)}`);
 
-  // === DETERMINE SIGNAL ===
   const noSignal: StrategySignal = {
     side: 'none', entryPrice: price, stopLoss: 0, takeProfit: 0, riskPerUnit: 0,
     reasoning, trendFilter: trendBias, atrBlocked, ema20: ema20Val, ema50: ema50Val,
@@ -263,18 +247,11 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
 
   if (atrBlocked) return noSignal;
 
-  // =========================================================
-  // COUNTER-TREND PULLBACK STRATEGY
-  // When H1 is bearish and 15m bounces UP → SHORT entry (mean reversion)
-  // When H1 is bullish and 15m dips DOWN → LONG entry (mean reversion)
-  // =========================================================
-
-  // LONG: H1 bullish + 15m dipped (price near/below EMA20, RSI < 45 = oversold dip)
+  // LONG: H1 bullish + 15m dipped
   if (trendBias === 'bullish') {
-    // Relaxed pullback: price within 0.3% of EMA20 OR below EMA20 OR between EMAs
     const longPullback = price <= ema20Val * 1.003 && price >= ema50Val * 0.997;
-    const longRsiOk = rsiVal > 30 && rsiVal < 55; // oversold-to-neutral zone in uptrend
-    const longMacdOk = macdBullish || macdBullCross || (macdVal > macdSig * 0.95); // near bullish
+    const longRsiOk = rsiVal > 30 && rsiVal < 55;
+    const longMacdOk = macdBullish || macdBullCross || (macdVal > macdSig * 0.95);
 
     if (longPullback && longRsiOk && longMacdOk) {
       const sl = findSwingLow(lows, 15) - atr14Val * 0.2;
@@ -285,7 +262,6 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
       return { ...noSignal, side: 'long', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
     }
 
-    // Explain why no entry
     const missing: string[] = [];
     if (!longPullback) missing.push(`No pullback (price $${price.toFixed(0)} vs EMA20 $${ema20Val.toFixed(0)})`);
     if (!longRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} outside 30-55`);
@@ -294,15 +270,12 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
     return noSignal;
   }
 
-  // SHORT: H1 bearish + 15m bounced UP (counter-trend pullback)
-  // Price ABOVE EMA20 or near resistance = perfect short entry in downtrend
+  // SHORT: H1 bearish + 15m bounced UP
   if (trendBias === 'bearish') {
-    // Pullback UP: price at/above EMA20, or price bounced toward EMA50/resistance
     const shortPullback = price >= ema20Val * 0.997 || (price > ema50Val * 0.995 && price < ema50Val * 1.005);
-    const shortRsiOk = rsiVal > 45; // Overbought bounce in downtrend — RSI above 45 means price rallied
-    const shortMacdOk = true; // In bearish H1, we don't need 15m MACD confirmation — the bounce IS the signal
+    const shortRsiOk = rsiVal > 45;
 
-    if (shortPullback && shortRsiOk && shortMacdOk) {
+    if (shortPullback && shortRsiOk) {
       const sl = findSwingHigh(highs, 15) + atr14Val * 0.2;
       const riskPerUnit = sl - price;
       if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
@@ -311,7 +284,6 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
       return { ...noSignal, side: 'short', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
     }
 
-    // Explain why no entry
     const missing: string[] = [];
     if (!shortPullback) missing.push(`No pullback UP (price $${price.toFixed(0)} below EMA20 $${ema20Val.toFixed(0)})`);
     if (!shortRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} < 45 (no bounce)`);
@@ -331,21 +303,16 @@ interface BacktestTrade {
 
 interface BacktestResult {
   trades: BacktestTrade[];
-  winrate: number;
-  profitFactor: number;
-  maxDrawdown: number;
-  maxDrawdownPct: number;
-  expectancy: number;
-  sharpeRatio: number;
-  totalReturn: number;
-  totalReturnPct: number;
-  totalTrades: number;
-  wins: number;
-  losses: number;
-  avgWin: number;
-  avgLoss: number;
+  winrate: number; profitFactor: number; maxDrawdown: number; maxDrawdownPct: number;
+  expectancy: number; sharpeRatio: number; totalReturn: number; totalReturnPct: number;
+  totalTrades: number; wins: number; losses: number; avgWin: number; avgLoss: number;
   equityCurve: { time: number; equity: number }[];
 }
+
+// ========== ROI SL CONSTANTS ==========
+const TRAIL_ACTIVATION_ROI = 20; // start trailing after +20% ROI
+const TRAIL_GAP_ROI = 20; // keep SL 20% ROI behind
+const INITIAL_SL_ROI = 20; // initial fixed SL at -20% ROI
 
 function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: number, riskPct: number, leverage: number): BacktestResult {
   const trades: BacktestTrade[] = [];
@@ -355,12 +322,10 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
   let maxDrawdownPct = 0;
   const equityCurve: { time: number; equity: number }[] = [{ time: m15Klines[0]?.time || 0, equity: balance }];
 
-  // We need at least 200 bars of 1H + 50 bars of 15m for indicators to warm up
-  const warmup15m = 60; // 60 bars warmup
+  const warmup15m = 60;
   let consecutiveLosses = 0;
   let cooldownUntil = 0;
 
-  // Current position tracking
   let inPosition = false;
   let posSide: 'long' | 'short' = 'long';
   let posEntry = 0;
@@ -369,27 +334,23 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
   let posQty = 0;
   let posMargin = 0;
   let posEntryTime = 0;
-  let posRiskPerUnit = 0;
-  let slMovedToBE = false;
 
   for (let i = warmup15m; i < m15Klines.length; i++) {
     const bar = m15Klines[i];
     const price = bar.close;
 
-    // If in position, check SL/TP on this bar's high/low
     if (inPosition) {
       let exitPrice = 0;
       let exitReason = '';
 
-      // Check SL hit
       if (posSide === 'long') {
         if (bar.low <= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.high >= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // ROI-based Trailing SL: activate at +10% ROI, keep 10% ROI gap
+          // ROI-based Trailing SL: activate at +20% ROI, keep 20% ROI gap
           const btLeverage = leverage || 5;
-          const activationMove = 10 / btLeverage / 100;
-          const gapMove = 10 / btLeverage / 100;
+          const activationMove = TRAIL_ACTIVATION_ROI / btLeverage / 100;
+          const gapMove = TRAIL_GAP_ROI / btLeverage / 100;
           const profitMove = (price - posEntry) / posEntry;
           if (profitMove >= activationMove) {
             const candidate = price * (1 - gapMove);
@@ -401,10 +362,9 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
         if (bar.high >= posSL) { exitPrice = posSL; exitReason = 'Stop Loss'; }
         else if (bar.low <= posTP) { exitPrice = posTP; exitReason = 'Take Profit'; }
         else {
-          // ROI-based Trailing SL for SHORT
           const btLeverage = leverage || 5;
-          const activationMove = 10 / btLeverage / 100;
-          const gapMove = 10 / btLeverage / 100;
+          const activationMove = TRAIL_ACTIVATION_ROI / btLeverage / 100;
+          const gapMove = TRAIL_GAP_ROI / btLeverage / 100;
           const profitMove = (posEntry - price) / posEntry;
           if (profitMove >= activationMove) {
             const candidate = price * (1 + gapMove);
@@ -415,20 +375,14 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
       }
 
       if (exitPrice > 0) {
-        const pnl = posSide === 'long'
-          ? (exitPrice - posEntry) * posQty
-          : (posEntry - exitPrice) * posQty;
+        const pnl = posSide === 'long' ? (exitPrice - posEntry) * posQty : (posEntry - exitPrice) * posQty;
         const pnlPct = (pnl / posMargin) * 100;
         balance += posMargin + pnl;
 
-        trades.push({
-          entryTime: posEntryTime, exitTime: bar.time, side: posSide,
-          entryPrice: posEntry, exitPrice, sl: posSL, tp: posTP,
-          pnl, pnlPct, exitReason,
-        });
+        trades.push({ entryTime: posEntryTime, exitTime: bar.time, side: posSide, entryPrice: posEntry, exitPrice, sl: posSL, tp: posTP, pnl, pnlPct, exitReason });
 
-        if (pnl < 0) { consecutiveLosses++; } else { consecutiveLosses = 0; }
-        if (consecutiveLosses >= 3) { cooldownUntil = bar.time + 4 * 3600; }
+        if (pnl < 0) consecutiveLosses++; else consecutiveLosses = 0;
+        if (consecutiveLosses >= 3) cooldownUntil = bar.time + 4 * 3600;
 
         peakBalance = Math.max(peakBalance, balance);
         const dd = peakBalance - balance;
@@ -442,21 +396,16 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
       continue;
     }
 
-    // Cooldown check
     if (bar.time < cooldownUntil) continue;
 
-    // Find corresponding 1H data up to this 15m bar's time
     const relevantH1 = h1Klines.filter(k => k.time <= bar.time);
-    if (relevantH1.length < 210) continue; // need 200+ for EMA200
+    if (relevantH1.length < 210) continue;
 
-    // Get last N 15m bars for analysis
     const lookback = Math.min(i + 1, 300);
     const m15Window = m15Klines.slice(i - lookback + 1, i + 1);
-
     const signal = analyzeStrategy(relevantH1, m15Window);
 
     if (signal.side !== 'none' && signal.riskPerUnit > 0) {
-      // Fixed $1000 margin per trade
       const margin = 1000;
       if (margin > balance) continue;
       const notional = margin * leverage;
@@ -466,64 +415,46 @@ function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: numb
       inPosition = true;
       posSide = signal.side;
       posEntry = price;
-      posSL = signal.stopLoss;
+
+      // Fixed initial SL at 20% ROI
+      const slMovePct = INITIAL_SL_ROI / leverage / 100;
+      posSL = signal.side === 'long' ? price * (1 - slMovePct) : price * (1 + slMovePct);
       posTP = signal.takeProfit;
       posQty = qty;
       posMargin = margin;
       posEntryTime = bar.time;
-      posRiskPerUnit = signal.riskPerUnit;
-      slMovedToBE = false;
     }
   }
 
   // Close any open position at last price
   if (inPosition) {
     const lastPrice = m15Klines[m15Klines.length - 1].close;
-    const pnl = posSide === 'long'
-      ? (lastPrice - posEntry) * posQty
-      : (posEntry - lastPrice) * posQty;
+    const pnl = posSide === 'long' ? (lastPrice - posEntry) * posQty : (posEntry - lastPrice) * posQty;
     balance += posMargin + pnl;
-    trades.push({
-      entryTime: posEntryTime, exitTime: m15Klines[m15Klines.length - 1].time,
-      side: posSide, entryPrice: posEntry, exitPrice: lastPrice,
-      sl: posSL, tp: posTP, pnl, pnlPct: (pnl / posMargin) * 100,
-      exitReason: 'End of data',
-    });
+    trades.push({ entryTime: posEntryTime, exitTime: m15Klines[m15Klines.length - 1].time, side: posSide, entryPrice: posEntry, exitPrice: lastPrice, sl: posSL, tp: posTP, pnl, pnlPct: (pnl / posMargin) * 100, exitReason: 'End of data' });
     equityCurve.push({ time: m15Klines[m15Klines.length - 1].time, equity: balance });
   }
 
-  // Compute stats
   const wins = trades.filter(t => t.pnl > 0);
   const losses = trades.filter(t => t.pnl <= 0);
   const totalWins = wins.reduce((s, t) => s + t.pnl, 0);
   const totalLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
   const avgWin = wins.length > 0 ? totalWins / wins.length : 0;
   const avgLoss = losses.length > 0 ? totalLosses / losses.length : 0;
-
   const winrate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
   const profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0;
-  const expectancy = trades.length > 0
-    ? (winrate / 100) * avgWin - ((100 - winrate) / 100) * avgLoss
-    : 0;
-
-  // Sharpe ratio (using trade returns)
+  const expectancy = trades.length > 0 ? (winrate / 100) * avgWin - ((100 - winrate) / 100) * avgLoss : 0;
   const returns = trades.map(t => t.pnlPct / 100);
   const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
-  const stdReturn = returns.length > 1
-    ? Math.sqrt(returns.reduce((s, r) => s + (r - avgReturn) ** 2, 0) / (returns.length - 1))
-    : 0;
-  const sharpeRatio = stdReturn > 0 ? (avgReturn / stdReturn) * Math.sqrt(252) : 0; // annualized
+  const stdReturn = returns.length > 1 ? Math.sqrt(returns.reduce((s, r) => s + (r - avgReturn) ** 2, 0) / (returns.length - 1)) : 0;
+  const sharpeRatio = stdReturn > 0 ? (avgReturn / stdReturn) * Math.sqrt(252) : 0;
 
   return {
-    trades: trades.slice(-100), // last 100 for response size
-    winrate, profitFactor, maxDrawdown, maxDrawdownPct,
-    expectancy, sharpeRatio,
-    totalReturn: balance - initialBalance,
+    trades: trades.slice(-100), winrate, profitFactor, maxDrawdown, maxDrawdownPct,
+    expectancy, sharpeRatio, totalReturn: balance - initialBalance,
     totalReturnPct: ((balance - initialBalance) / initialBalance) * 100,
-    totalTrades: trades.length,
-    wins: wins.length, losses: losses.length,
-    avgWin, avgLoss,
-    equityCurve: equityCurve.filter((_, i) => i % Math.max(1, Math.floor(equityCurve.length / 200)) === 0), // downsample
+    totalTrades: trades.length, wins: wins.length, losses: losses.length, avgWin, avgLoss,
+    equityCurve: equityCurve.filter((_, i) => i % Math.max(1, Math.floor(equityCurve.length / 200)) === 0),
   };
 }
 
@@ -538,7 +469,6 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Support config_id parameter or default to first config
     let action = null;
     let bodyData: any = {};
     if (req.method === 'POST') {
@@ -548,7 +478,6 @@ serve(async (req) => {
 
     const configId = bodyData.config_id || new URL(req.url).searchParams.get('config_id');
 
-    // If action is 'list_configs', return all configs
     if (action === 'list_configs') {
       const { data: allConfigs } = await supabase.from('bot_config').select('*').order('created_at');
       return new Response(JSON.stringify({ configs: allConfigs || [] }), {
@@ -556,7 +485,6 @@ serve(async (req) => {
       });
     }
 
-    // Get specific config or first one
     let config: any;
     if (configId) {
       const { data } = await supabase.from('bot_config').select('*').eq('id', configId).single();
@@ -565,18 +493,18 @@ serve(async (req) => {
       const { data } = await supabase.from('bot_config').select('*').limit(1);
       config = data?.[0];
     }
-    
+
     if (!config) {
       return new Response(JSON.stringify({ message: 'No bot config found' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 404,
       });
     }
 
-    // Handle manual actions
+    const symbolLabel = config.symbol.replace('_USDT', '');
+
     if (action) {
       const body = bodyData;
 
-      // Status: return config + positions/trades/logs without running trading logic
       if (action === 'status') {
         const { data: positions } = await supabase.from('bot_positions')
           .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
@@ -589,7 +517,6 @@ serve(async (req) => {
         });
       }
 
-      // Trail: lightweight action — only manage open positions (SL/TP/trailing), no strategy analysis
       if (action === 'trail') {
         const currentPrice = await fetchCurrentPrice(config.symbol);
         const { data: openPositions } = await supabase.from('bot_positions')
@@ -618,12 +545,9 @@ serve(async (req) => {
               status: 'liquidated', exit_price: currentPrice, pnl: -margin, pnl_pct: -100,
               closed_at: new Date().toISOString(), exit_reason: 'Liquidation',
             }).eq('id', pos.id);
-            await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} | PnL: -$${margin.toFixed(2)}`);
-            await notifyLinkedTelegramUsers(
-              supabase,
-              config.symbol,
-              `⚠️ BTC LIQUIDATION\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: -$${margin.toFixed(2)}`,
-            );
+            await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} ${symbolLabel} | PnL: -$${margin.toFixed(2)}`);
+            await notifyLinkedTelegramUsers(supabase, config.symbol,
+              `⚠️ ${symbolLabel} LIQUIDATION\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: -$${margin.toFixed(2)}`);
             continue;
           }
 
@@ -643,12 +567,9 @@ serve(async (req) => {
               price: currentPrice, quantity: qty, pnl, balance_after: balance,
               reason: `Trail SL hit at $${currentPrice.toFixed(2)}`,
             });
-            await logBot(supabase, config.id, 'trade', `🛑 TRAIL SL HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
-            await notifyLinkedTelegramUsers(
-              supabase,
-              config.symbol,
-              `🛑 BTC Trail SL\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
-            );
+            await logBot(supabase, config.id, 'trade', `🛑 TRAIL SL HIT: ${pos.side} ${symbolLabel} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+            await notifyLinkedTelegramUsers(supabase, config.symbol,
+              `🛑 ${symbolLabel} Trail SL\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
             continue;
           }
 
@@ -668,19 +589,14 @@ serve(async (req) => {
               price: currentPrice, quantity: qty, pnl, balance_after: balance,
               reason: `Take Profit at $${currentPrice.toFixed(2)}`,
             });
-            await logBot(supabase, config.id, 'trade', `🎯 TP HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
-            await notifyLinkedTelegramUsers(
-              supabase,
-              config.symbol,
-              `🎯 BTC Take Profit\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
-            );
+            await logBot(supabase, config.id, 'trade', `🎯 TP HIT: ${pos.side} ${symbolLabel} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+            await notifyLinkedTelegramUsers(supabase, config.symbol,
+              `🎯 ${symbolLabel} Take Profit\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
             continue;
           }
 
-          // ROI-based Trailing SL
+          // ROI-based Trailing SL — 20% ROI activation, 20% ROI gap
           const leverage = Number(pos.leverage || config.leverage);
-          const TRAIL_ACTIVATION_ROI = 10;
-          const TRAIL_GAP_ROI = 10;
           const sideMul = pos.side === 'long' ? 1 : -1;
           const activationMovePct = TRAIL_ACTIVATION_ROI / leverage / 100;
           const gapMovePct = TRAIL_GAP_ROI / leverage / 100;
@@ -696,14 +612,12 @@ serve(async (req) => {
               ? Math.max(currentSL, candidateSl, entryPrice * 1.001)
               : Math.min(currentSL, candidateSl, entryPrice * 0.999);
 
-            const shouldUpdate = pos.side === 'long'
-              ? lockedSl > currentSL
-              : lockedSl < currentSL;
+            const shouldUpdate = pos.side === 'long' ? lockedSl > currentSL : lockedSl < currentSL;
 
             if (shouldUpdate) {
               await supabase.from('bot_positions').update({ stop_loss: lockedSl }).eq('id', pos.id);
               await logBot(supabase, config.id, 'info',
-                `🔒 TRAIL SL: ${pos.side.toUpperCase()} ROI ${currentROI.toFixed(1)}% | SL $${currentSL.toFixed(0)} → $${lockedSl.toFixed(0)} (${TRAIL_GAP_ROI}% ROI gap)`);
+                `🔒 TRAIL SL: ${pos.side.toUpperCase()} ${symbolLabel} ROI ${currentROI.toFixed(1)}% | SL $${currentSL.toFixed(0)} → $${lockedSl.toFixed(0)} (${TRAIL_GAP_ROI}% ROI gap)`);
             }
           }
         }
@@ -712,7 +626,6 @@ serve(async (req) => {
           await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
         }
 
-        // Return updated data
         const { data: positions } = await supabase.from('bot_positions')
           .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
         const { data: trades } = await supabase.from('bot_trades')
@@ -782,7 +695,6 @@ serve(async (req) => {
         });
       }
 
-      // ========== BACKTEST ACTION ==========
       if (action === 'backtest') {
         const riskPct = body.risk_pct || 1;
         const backtestBalance = body.balance || Number(config.initial_balance);
@@ -790,7 +702,6 @@ serve(async (req) => {
 
         await logBot(supabase, config.id, 'info', '📊 Starting backtest...');
 
-        // Fetch max available data (1000 bars each)
         const [h1Data, m15Data] = await Promise.all([
           fetchKlines(config.symbol, '1h', 1000),
           fetchKlines(config.symbol, '15m', 1000),
@@ -819,7 +730,7 @@ serve(async (req) => {
       });
     }
 
-    // === TRADING LOGIC (Pullback EMA Strategy) ===
+    // === TRADING LOGIC ===
     const [h1Klines, m15Klines] = await Promise.all([
       fetchKlines(config.symbol, '1h', 300),
       fetchKlines(config.symbol, '15m', 300),
@@ -846,23 +757,18 @@ serve(async (req) => {
         : (entryPrice - currentPrice) * qty;
       const pnlPct = (pnl / margin) * 100;
 
-      // Liquidation check
       if (pnlPct <= -90) {
         balance -= margin;
         await supabase.from('bot_positions').update({
           status: 'liquidated', exit_price: currentPrice, pnl: -margin, pnl_pct: -100,
           closed_at: new Date().toISOString(), exit_reason: 'Liquidation',
         }).eq('id', pos.id);
-        await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} | PnL: -$${margin.toFixed(2)}`);
-        await notifyLinkedTelegramUsers(
-          supabase,
-          config.symbol,
-          `⚠️ BTC LIQUIDATION\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: -$${margin.toFixed(2)}`,
-        );
+        await logBot(supabase, config.id, 'error', `⚠️ LIQUIDATION: ${pos.side} ${symbolLabel} | PnL: -$${margin.toFixed(2)}`);
+        await notifyLinkedTelegramUsers(supabase, config.symbol,
+          `⚠️ ${symbolLabel} LIQUIDATION\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: -$${margin.toFixed(2)}`);
         continue;
       }
 
-      // Stop Loss
       if (currentSL && (
         (pos.side === 'long' && currentPrice <= currentSL) ||
         (pos.side === 'short' && currentPrice >= currentSL)
@@ -877,16 +783,12 @@ serve(async (req) => {
           price: currentPrice, quantity: qty, pnl, balance_after: balance,
           reason: `Stop Loss at $${currentPrice.toFixed(2)}`,
         });
-        await logBot(supabase, config.id, 'trade', `🛑 SL HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
-        await notifyLinkedTelegramUsers(
-          supabase,
-          config.symbol,
-          `🛑 BTC Stop Loss\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
-        );
+        await logBot(supabase, config.id, 'trade', `🛑 SL HIT: ${pos.side} ${symbolLabel} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+        await notifyLinkedTelegramUsers(supabase, config.symbol,
+          `🛑 ${symbolLabel} Stop Loss\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
         continue;
       }
 
-      // Take Profit
       if (currentTP && (
         (pos.side === 'long' && currentPrice >= currentTP) ||
         (pos.side === 'short' && currentPrice <= currentTP)
@@ -901,24 +803,17 @@ serve(async (req) => {
           price: currentPrice, quantity: qty, pnl, balance_after: balance,
           reason: `Take Profit at $${currentPrice.toFixed(2)}`,
         });
-        await logBot(supabase, config.id, 'trade', `🎯 TP HIT: ${pos.side} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
-        await notifyLinkedTelegramUsers(
-          supabase,
-          config.symbol,
-          `🎯 BTC Take Profit\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
-        );
+        await logBot(supabase, config.id, 'trade', `🎯 TP HIT: ${pos.side} ${symbolLabel} | PnL: $${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
+        await notifyLinkedTelegramUsers(supabase, config.symbol,
+          `🎯 ${symbolLabel} Take Profit\n${pos.side.toUpperCase()} zamknięta przy $${currentPrice.toFixed(2)}\nPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`);
         continue;
       }
 
-      // === ROI-BASED TRAILING SL ===
-      // Activate after +10% ROI, keep SL 10% ROI behind current price
-      // One-way lock: SL can only tighten (move in profitable direction), NEVER loosen
+      // ROI-based Trailing SL — 20% ROI
       const leverage = Number(pos.leverage || config.leverage);
-      const TRAIL_ACTIVATION_ROI = 10; // start trailing after +10% ROI
-      const TRAIL_GAP_ROI = 10; // keep SL 10% ROI behind
       const sideMul = pos.side === 'long' ? 1 : -1;
-      const activationMovePct = TRAIL_ACTIVATION_ROI / leverage / 100; // price move % needed
-      const gapMovePct = TRAIL_GAP_ROI / leverage / 100; // SL gap as price move %
+      const activationMovePct = TRAIL_ACTIVATION_ROI / leverage / 100;
+      const gapMovePct = TRAIL_GAP_ROI / leverage / 100;
       const inProfitMovePct = ((currentPrice - entryPrice) / entryPrice) * sideMul;
       const currentROI = inProfitMovePct * leverage * 100;
 
@@ -927,20 +822,16 @@ serve(async (req) => {
           ? currentPrice * (1 - gapMovePct)
           : currentPrice * (1 + gapMovePct);
 
-        // One-way lock: for LONG, SL can only go UP; for SHORT, SL can only go DOWN
-        // Also ensure SL is at least at break-even (entry + tiny buffer)
         const lockedSl = pos.side === 'long'
           ? Math.max(currentSL, candidateSl, entryPrice * 1.001)
           : Math.min(currentSL, candidateSl, entryPrice * 0.999);
 
-        const shouldUpdate = pos.side === 'long'
-          ? lockedSl > currentSL
-          : lockedSl < currentSL;
+        const shouldUpdate = pos.side === 'long' ? lockedSl > currentSL : lockedSl < currentSL;
 
         if (shouldUpdate) {
           await supabase.from('bot_positions').update({ stop_loss: lockedSl }).eq('id', pos.id);
           await logBot(supabase, config.id, 'info',
-            `🔒 TRAIL SL: ${pos.side.toUpperCase()} ROI ${currentROI.toFixed(1)}% | SL $${currentSL.toFixed(0)} → $${lockedSl.toFixed(0)} (${TRAIL_GAP_ROI}% ROI gap)`);
+            `🔒 TRAIL SL: ${pos.side.toUpperCase()} ${symbolLabel} ROI ${currentROI.toFixed(1)}% | SL $${currentSL.toFixed(0)} → $${lockedSl.toFixed(0)} (${TRAIL_GAP_ROI}% ROI gap)`);
         }
       }
     }
@@ -950,7 +841,6 @@ serve(async (req) => {
       .select('id').eq('bot_config_id', config.id).eq('status', 'open');
 
     if ((!remainingOpen || remainingOpen.length === 0) && signal.side !== 'none') {
-      // 3 consecutive losses → 4h cooldown
       const { data: recentClosed } = await supabase.from('bot_positions')
         .select('closed_at, exit_reason, pnl')
         .eq('bot_config_id', config.id)
@@ -974,20 +864,25 @@ serve(async (req) => {
 
       if (!cooldownActive && signal.riskPerUnit > 0) {
         const leverage = Number(config.leverage);
-        // Fixed margin of $1000 per trade
         const margin = 1000;
         if (margin <= balance) {
           const notional = margin * leverage;
           const qty = notional / currentPrice;
-          const riskAmount = qty * signal.riskPerUnit; // actual $ risk
+
+          // Fixed initial SL at 20% ROI
+          const slMovePct = INITIAL_SL_ROI / leverage / 100;
+          const initialSL = signal.side === 'long'
+            ? currentPrice * (1 - slMovePct)
+            : currentPrice * (1 + slMovePct);
 
           balance -= margin;
 
           const entryReason = signal.reasoning.join(' | ');
+          const riskAmount = qty * signal.riskPerUnit;
 
           const { data: newPos } = await supabase.from('bot_positions').insert({
             bot_config_id: config.id, side: signal.side, entry_price: currentPrice, quantity: qty,
-            leverage, margin_used: margin, stop_loss: signal.stopLoss, take_profit: signal.takeProfit,
+            leverage, margin_used: margin, stop_loss: initialSL, take_profit: signal.takeProfit,
             entry_reason: entryReason.slice(0, 500),
           }).select().single();
 
@@ -995,17 +890,14 @@ serve(async (req) => {
             bot_config_id: config.id, position_id: newPos?.id,
             action: signal.side === 'long' ? 'open_long' : 'open_short',
             price: currentPrice, quantity: qty, balance_after: balance,
-            reason: `${signal.side.toUpperCase()} @ $${currentPrice.toFixed(2)} | SL: $${signal.stopLoss.toFixed(2)} | TP: $${signal.takeProfit.toFixed(2)} | Risk: $${riskAmount.toFixed(2)} (1%)`,
+            reason: `${signal.side.toUpperCase()} @ $${currentPrice.toFixed(2)} | SL: $${initialSL.toFixed(2)} (-${INITIAL_SL_ROI}% ROI) | TP: $${signal.takeProfit.toFixed(2)} | Risk: $${riskAmount.toFixed(2)}`,
           });
 
           await logBot(supabase, config.id, 'trade',
-            `📈 ${signal.side.toUpperCase()} @ $${currentPrice.toFixed(2)} | Qty: ${qty.toFixed(6)} | SL: $${signal.stopLoss.toFixed(0)} | TP: $${signal.takeProfit.toFixed(0)} | R:R 1:2 | Risk: $${riskAmount.toFixed(2)}`);
+            `📈 ${signal.side.toUpperCase()} ${symbolLabel} @ $${currentPrice.toFixed(2)} | Qty: ${qty.toFixed(6)} | SL: $${initialSL.toFixed(0)} (-${INITIAL_SL_ROI}% ROI) | TP: $${signal.takeProfit.toFixed(0)} | Trail: ${TRAIL_ACTIVATION_ROI}%/${TRAIL_GAP_ROI}%`);
           await logBot(supabase, config.id, 'info', `🧠 ${entryReason}`);
-          await notifyLinkedTelegramUsers(
-            supabase,
-            config.symbol,
-            `📊 BTC analiza\nSygnał: ${signal.side.toUpperCase()}\nWejście: $${currentPrice.toFixed(2)}\nSL: $${signal.stopLoss.toFixed(2)}\nTP: $${signal.takeProfit.toFixed(2)}`,
-          );
+          await notifyLinkedTelegramUsers(supabase, config.symbol,
+            `📊 ${symbolLabel} analiza\nSygnał: ${signal.side.toUpperCase()}\nWejście: $${currentPrice.toFixed(2)}\nSL: $${initialSL.toFixed(2)} (-${INITIAL_SL_ROI}% ROI)\nTP: $${signal.takeProfit.toFixed(2)}`);
         }
       }
     } else if (signal.side === 'none' && (!remainingOpen || remainingOpen.length === 0)) {
