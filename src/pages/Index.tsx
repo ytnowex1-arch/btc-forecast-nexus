@@ -29,49 +29,49 @@ export default function Index() {
 
   const { data: klines, isLoading, error } = useQuery({
     queryKey: ['klines', interval],
-    queryFn: () => fetchKlines('BTCUSDT', interval, 500),
+    queryFn: () => fetchKlines('BTC_USDT', interval, 500),
     refetchInterval: 30000,
     staleTime: 15000,
   });
 
   const { data: stats } = useQuery({
     queryKey: ['stats'],
-    queryFn: () => fetch24hStats('BTCUSDT'),
+    queryFn: () => fetch24hStats('BTC_USDT'),
     refetchInterval: 10000,
   });
 
   // Multi-timeframe data
   const { data: h1Klines } = useQuery({
     queryKey: ['klines', '1h', 'strategy'],
-    queryFn: () => fetchKlines('BTCUSDT', '1h', 300),
+    queryFn: () => fetchKlines('BTC_USDT', '1h', 300),
     refetchInterval: 60000,
     staleTime: 30000,
   });
 
   const { data: m5Klines } = useQuery({
     queryKey: ['klines', '5m', 'strategy'],
-    queryFn: () => fetchKlines('BTCUSDT', '5m', 300),
+    queryFn: () => fetchKlines('BTC_USDT', '5m', 300),
     refetchInterval: 30000,
     staleTime: 15000,
   });
 
   const { data: m15Klines } = useQuery({
     queryKey: ['klines', '15m', 'projection'],
-    queryFn: () => fetchKlines('BTCUSDT', '15m', 300),
+    queryFn: () => fetchKlines('BTC_USDT', '15m', 300),
     refetchInterval: 60000,
     staleTime: 30000,
   });
 
   const { data: h4Klines } = useQuery({
     queryKey: ['klines', '4h', 'projection'],
-    queryFn: () => fetchKlines('BTCUSDT', '4h', 300),
+    queryFn: () => fetchKlines('BTC_USDT', '4h', 300),
     refetchInterval: 120000,
     staleTime: 60000,
   });
 
   const { data: dailyKlines } = useQuery({
     queryKey: ['klines', '1d', 'strategy'],
-    queryFn: () => fetchKlines('BTCUSDT', '1d', 30),
+    queryFn: () => fetchKlines('BTC_USDT', '1d', 30),
     refetchInterval: 300000,
     staleTime: 60000,
   });
@@ -121,7 +121,7 @@ export default function Index() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-bearish font-mono text-center">
-          <p className="text-xl font-bold">Błąd połączenia z Binance API</p>
+          <p className="text-xl font-bold">Błąd połączenia z MEXC API</p>
           <p className="text-sm text-muted-foreground mt-2">{(error as Error).message}</p>
         </div>
       </div>
@@ -199,7 +199,7 @@ export default function Index() {
       <BotDashboard />
 
       <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
-        Dane z Binance API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M5 + Daily) •
+        Dane z MEXC Futures API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M15) •
         <span className="text-warning"> Nie stanowi porady inwestycyjnej • Paper Trading — bez prawdziwych pieniędzy</span>
       </div>
     </div>

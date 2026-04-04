@@ -54,13 +54,16 @@ interface LogEntry {
 }
 
 const SYMBOL_LABELS: Record<string, string> = {
-  BTCUSDT: 'BTC',
-  ETHUSDT: 'ETH',
+  BTC_USDT: 'BTC',
+  ETH_USDT: 'ETH',
+  SOL_USDT: 'SOL',
+  XRP_USDT: 'XRP',
+  BNB_USDT: 'BNB',
 };
 
 export default function BotDashboard() {
   const [configs, setConfigs] = useState<BotConfig[]>([]);
-  const [activeSymbol, setActiveSymbol] = useState<string>('BTCUSDT');
+  const [activeSymbol, setActiveSymbol] = useState<string>('BTC_USDT');
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -80,12 +83,16 @@ export default function BotDashboard() {
   useEffect(() => {
     const fetchPrices = async () => {
       try {
-        const symbols = ['BTCUSDT', 'ETHUSDT'];
+        const symbols = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'BNB_USDT'];
         const results = await Promise.all(
-          symbols.map(s => fetch(`https://data-api.binance.vision/api/v3/ticker/price?symbol=${s}`).then(r => r.json()))
+          symbols.map(s => fetch(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${s}`).then(r => r.json()))
         );
         const newPrices: Record<string, number> = {};
-        symbols.forEach((s, i) => { newPrices[s] = parseFloat(results[i].price); });
+        symbols.forEach((s, i) => {
+          if (results[i]?.success && results[i]?.data?.lastPrice) {
+            newPrices[s] = results[i].data.lastPrice;
+          }
+        });
         setPrices(newPrices);
       } catch (e) { /* ignore */ }
     };
