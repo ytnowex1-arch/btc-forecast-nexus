@@ -199,7 +199,7 @@ export default function Index() {
       <BotDashboard />
 
       <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
-        Dane z Binance API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M5 + Daily) •
+        Dane z MEXC Futures API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M15) •
         <span className="text-warning"> Nie stanowi porady inwestycyjnej • Paper Trading — bez prawdziwych pieniędzy</span>
       </div>
     </div>
