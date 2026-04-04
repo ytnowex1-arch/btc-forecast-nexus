@@ -121,7 +121,7 @@ export default function Index() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-bearish font-mono text-center">
-          <p className="text-xl font-bold">Błąd połączenia z Binance API</p>
+          <p className="text-xl font-bold">Błąd połączenia z MEXC API</p>
           <p className="text-sm text-muted-foreground mt-2">{(error as Error).message}</p>
         </div>
       </div>
