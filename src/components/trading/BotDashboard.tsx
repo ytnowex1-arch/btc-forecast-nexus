@@ -83,12 +83,16 @@ export default function BotDashboard() {
   useEffect(() => {
     const fetchPrices = async () => {
       try {
-        const symbols = ['BTCUSDT', 'ETHUSDT'];
+        const symbols = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'BNB_USDT'];
         const results = await Promise.all(
-          symbols.map(s => fetch(`https://data-api.binance.vision/api/v3/ticker/price?symbol=${s}`).then(r => r.json()))
+          symbols.map(s => fetch(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${s}`).then(r => r.json()))
         );
         const newPrices: Record<string, number> = {};
-        symbols.forEach((s, i) => { newPrices[s] = parseFloat(results[i].price); });
+        symbols.forEach((s, i) => {
+          if (results[i]?.success && results[i]?.data?.lastPrice) {
+            newPrices[s] = results[i].data.lastPrice;
+          }
+        });
         setPrices(newPrices);
       } catch (e) { /* ignore */ }
     };
