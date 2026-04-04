@@ -54,8 +54,11 @@ interface LogEntry {
 }
 
 const SYMBOL_LABELS: Record<string, string> = {
-  BTCUSDT: 'BTC',
-  ETHUSDT: 'ETH',
+  BTC_USDT: 'BTC',
+  ETH_USDT: 'ETH',
+  SOL_USDT: 'SOL',
+  XRP_USDT: 'XRP',
+  BNB_USDT: 'BNB',
 };
 
 export default function BotDashboard() {
