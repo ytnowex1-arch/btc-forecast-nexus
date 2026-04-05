@@ -990,7 +990,7 @@ serve(async (req) => {
     await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
 
     await logBot(supabase, config.id, 'info',
-      `Tick: $${currentPrice.toFixed(2)} | Trend: ${signal.trendFilter} | EMA20: $${signal.ema20.toFixed(0)} | EMA50: $${signal.ema50.toFixed(0)} | RSI: ${signal.rsi.toFixed(1)} | Pullback: ${signal.pullbackDetected ? '✅' : '❌'} | Bal: $${balance.toFixed(2)}`);
+      `Tick: $${currentPrice.toFixed(2)} | Trend: ${signal.trendFilter} | ADX: ${signal.adxVal.toFixed(1)} | StochRSI K: ${signal.stochRsiK.toFixed(1)} D: ${signal.stochRsiD.toFixed(1)} | RVOL: ${signal.rvolVal.toFixed(2)} | BB: $${signal.bbLower.toFixed(0)}-$${signal.bbUpper.toFixed(0)} | Bal: $${balance.toFixed(2)}`);
 
     const { data: positions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
