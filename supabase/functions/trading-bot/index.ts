@@ -125,23 +125,66 @@ function calcRSI(closes: number[], period = 14): number[] {
   return rsi;
 }
 
-function calcMACD(closes: number[], fast = 12, slow = 26, sig = 9) {
-  const emaFast = calcEMA(closes, fast);
-  const emaSlow = calcEMA(closes, slow);
-  const macdLine = emaFast.map((v, i) => v - emaSlow[i]);
-  const signalLine = calcEMA(macdLine, sig);
-  return { macdLine, signalLine };
+function calcBollingerBands(closes: number[], period = 20, stdDev = 2) {
+  const sma = calcSMA(closes, period);
+  const upper: number[] = [];
+  const lower: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) { upper.push(NaN); lower.push(NaN); continue; }
+    const slice = closes.slice(i - period + 1, i + 1);
+    const mean = sma[i];
+    const std = Math.sqrt(slice.reduce((sum, v) => sum + (v - mean) ** 2, 0) / period);
+    upper.push(mean + stdDev * std);
+    lower.push(mean - stdDev * std);
+  }
+  return { upper, middle: sma, lower };
 }
 
-function calcStochastic(highs: number[], lows: number[], closes: number[], period = 14, smoothK = 3) {
+function calcStochRSI(closes: number[], rsiPeriod = 14, stochPeriod = 14, smoothK = 3, smoothD = 3) {
+  const rsi = calcRSI(closes, rsiPeriod);
   const rawK: number[] = [];
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period - 1) { rawK.push(NaN); continue; }
-    const hh = Math.max(...highs.slice(i - period + 1, i + 1));
-    const ll = Math.min(...lows.slice(i - period + 1, i + 1));
-    rawK.push(hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100);
+  for (let i = 0; i < rsi.length; i++) {
+    if (isNaN(rsi[i]) || i < rsiPeriod + stochPeriod - 1) { rawK.push(NaN); continue; }
+    const slice = rsi.slice(i - stochPeriod + 1, i + 1).filter(v => !isNaN(v));
+    if (slice.length < stochPeriod) { rawK.push(NaN); continue; }
+    const hh = Math.max(...slice);
+    const ll = Math.min(...slice);
+    rawK.push(hh === ll ? 50 : ((rsi[i] - ll) / (hh - ll)) * 100);
   }
-  return calcSMA(rawK, smoothK);
+  const k = calcSMA(rawK, smoothK);
+  const d = calcSMA(k, smoothD);
+  return { k, d };
+}
+
+function calcADX(highs: number[], lows: number[], closes: number[], period = 14) {
+  const plusDM: number[] = [0];
+  const minusDM: number[] = [0];
+  const tr: number[] = [highs[0] - lows[0]];
+  for (let i = 1; i < closes.length; i++) {
+    const upMove = highs[i] - highs[i - 1];
+    const downMove = lows[i - 1] - lows[i];
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  const atr = calcEMA(tr, period);
+  const smoothPlusDM = calcEMA(plusDM, period);
+  const smoothMinusDM = calcEMA(minusDM, period);
+  const plusDI = smoothPlusDM.map((v, i) => atr[i] ? (v / atr[i]) * 100 : 0);
+  const minusDI = smoothMinusDM.map((v, i) => atr[i] ? (v / atr[i]) * 100 : 0);
+  const dx = plusDI.map((v, i) => {
+    const sum = v + minusDI[i];
+    return sum ? Math.abs(v - minusDI[i]) / sum * 100 : 0;
+  });
+  const adx = calcEMA(dx, period);
+  return { adx, plusDI, minusDI };
+}
+
+function calcRVOL(volumes: number[], period = 20): number {
+  const len = volumes.length;
+  if (len < period + 1) return 1;
+  const avgVol = volumes.slice(len - period - 1, len - 1).reduce((a, b) => a + b, 0) / period;
+  return avgVol > 0 ? volumes[len - 1] / avgVol : 1;
 }
 
 function calcATR(highs: number[], lows: number[], closes: number[], period = 14): number[] {
