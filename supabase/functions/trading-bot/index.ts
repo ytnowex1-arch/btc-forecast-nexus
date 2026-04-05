@@ -352,29 +352,7 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
   return noSignal;
 }
 
-  // SHORT: H1 bearish + 15m bounced UP
-  if (trendBias === 'bearish') {
-    const shortPullback = price >= ema20Val * 0.997 || (price > ema50Val * 0.995 && price < ema50Val * 1.005);
-    const shortRsiOk = rsiVal > 45;
 
-    if (shortPullback && shortRsiOk) {
-      const sl = findSwingHigh(highs, 15) + atr14Val * 0.2;
-      const riskPerUnit = sl - price;
-      if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
-      const tp = price - riskPerUnit * 2.5;
-      reasoning.push(`✅ SHORT ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
-      return { ...noSignal, side: 'short', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
-    }
-
-    const missing: string[] = [];
-    if (!shortPullback) missing.push(`No pullback UP (price $${price.toFixed(0)} below EMA20 $${ema20Val.toFixed(0)})`);
-    if (!shortRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} < 45 (no bounce)`);
-    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
-    return noSignal;
-  }
-
-  return noSignal;
-}
 
 // ========== BACKTEST ENGINE ==========
 interface BacktestTrade {
