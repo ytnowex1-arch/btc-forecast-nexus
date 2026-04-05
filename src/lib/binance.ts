@@ -21,30 +21,30 @@ const MEXC_INTERVALS: Record<string, string> = {
 };
 
 /**
- * Konwertuje symbole typu BTCUSDT na format MEXC BTC_USDT
+ * Formatuje symbol na standard MEXC Futures (np. BTC_USDT)
  */
 function formatSymbol(symbol: string): string {
-  if (symbol.includes('_')) return symbol.toUpperCase();
-  // Zakładamy, że najpopularniejsze pary kończą się na USDT
-  if (symbol.endsWith('USDT')) {
-    return `${symbol.slice(0, -4)}_USDT`.toUpperCase();
+  if (!symbol) return 'BTC_USDT';
+  const clean = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (clean.includes('_')) return clean;
+  if (clean.endsWith('USDT')) {
+    return `${clean.slice(0, -4)}_USDT`;
   }
-  return symbol.toUpperCase();
+  return `${clean}_USDT`;
 }
 
 async function mexcFetch(endpoint: string, params: Record<string, string> = {}): Promise<any> {
-  const qs = new URLSearchParams({ endpoint, ...params });
-  const res = await fetch(`${PROXY_URL}?${qs.toString()}`);
-  
-  if (!res.ok) throw new Error(`MEXC proxy error: ${res.status}`);
-  
-  const json = await res.json();
-  
-  // MEXC zwraca { success: boolean, code: number, data: any }
-  if (json.error) throw new Error(json.error);
-  if (json.success === false) throw new Error(`MEXC API error code: ${json.code}`);
-  
-  return json;
+  try {
+    const qs = new URLSearchParams({ endpoint, ...params });
+    const res = await fetch(`${PROXY_URL}?${qs.toString()}`);
+    
+    if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+    
+    const json = await res.json();
+    return json;
+  } catch (err) {
+    return { success: false, error: 'Network error' };
+  }
 }
 
 export async function fetchKlines(
@@ -63,46 +63,49 @@ export async function fetchKlines(
   const end = Math.floor(Date.now() / 1000);
   const start = end - (limit * seconds);
 
-  // Endpoint dla klines w MEXC to /api/v1/contract/kline/{symbol}
+  // Endpoint kline wymaga symbolu w ścieżce, co proxy przekazuje dalej
   const json = await mexcFetch(`kline/${formattedSymbol}`, {
     interval: mexcInterval,
     start: String(start),
     end: String(end),
   });
 
-  const data = json.data;
-  if (!data || !data.time) return [];
+  // Bezpieczne sprawdzanie danych
+  if (!json || !json.success || !json.data || !Array.isArray(json.data.time)) {
+    console.warn("MEXC Klines data invalid or missing:", json);
+    return [];
+  }
 
+  const data = json.data;
   const klines: Kline[] = [];
-  // MEXC zwraca dane w formie obiektów z tablicami: { time: [], open: [], ... }
-  for (let i = 0; i < data.time.length; i++) {
-    klines.push({
-      time: data.time[i],
-      open: Number(data.open[i]),
-      high: Number(data.high[i]),
-      low: Number(data.low[i]),
-      close: Number(data.close[i]),
-      volume: Number(data.vol[i]),
-    });
+  
+  try {
+    for (let i = 0; i < data.time.length; i++) {
+      klines.push({
+        time: Number(data.time[i]),
+        open: Number(data.open[i] || 0),
+        high: Number(data.high[i] || 0),
+        low: Number(data.low[i] || 0),
+        close: Number(data.close[i] || 0),
+        volume: Number(data.vol[i] || 0),
+      });
+    }
+  } catch (e) {
+    console.error("Error parsing klines loop:", e);
   }
   
   return klines;
 }
 
 export async function fetchCurrentPrice(symbol = 'BTC_USDT'): Promise<number> {
-  try {
-    const formattedSymbol = formatSymbol(symbol);
-    // Endpoint /ticker zwraca dane dla konkretnego symbolu
-    const json = await mexcFetch('ticker', { symbol: formattedSymbol });
-    
-    // Weryfikacja czy lastPrice istnieje (MEXC API v1 returns lastPrice in data)
-    if (json.data && json.data.lastPrice !== undefined) {
-      return Number(json.data.lastPrice);
-    }
-    
-    throw new Error("Price data missing in response");
-  } catch (error) {
-    console.error("Error fetching price from MEXC:", error);
-    return 0;
+  const formattedSymbol = formatSymbol(symbol);
+  const json = await mexcFetch('ticker', { symbol: formattedSymbol });
+  
+  // MEXC API V1 dla /ticker zwraca obiekt w data, gdzie jest lastPrice
+  if (json && json.success && json.data && json.data.lastPrice !== undefined) {
+    return Number(json.data.lastPrice);
   }
+
+  console.warn(`Could not fetch price for ${formattedSymbol}`, json);
+  return 0; // Zwracamy 0 zamiast błędu, żeby nie "wywalić" UI
 }
