@@ -153,15 +153,17 @@ export default function IndicatorPanels({ klines, indicators }: Props) {
         </ResponsiveContainer>
       </PanelWrapper>
 
-      {/* Volume */}
-      <PanelWrapper title="Volume">
+      {/* RVOL */}
+      <PanelWrapper title="RVOL (20)">
         <ResponsiveContainer>
           <ComposedChart data={last100} {...chartCommon}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
             <XAxis dataKey="timeLabel" {...axisProps} hide />
-            <YAxis {...axisProps} width={40} tickFormatter={(v) => `${(v / 1e3).toFixed(0)}k`} />
+            <YAxis {...axisProps} width={35} />
             <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 11 }} />
-            <Bar dataKey="volume" fill="rgba(59,130,246,0.4)" />
+            <ReferenceLine y={1.2} stroke="#22c55e" strokeDasharray="3 3" label={{ value: '1.2', fill: '#22c55e', fontSize: 9 }} />
+            <ReferenceLine y={1} stroke="#374151" />
+            <Bar dataKey="rvol" fill="rgba(59,130,246,0.4)" />
           </ComposedChart>
         </ResponsiveContainer>
       </PanelWrapper>
