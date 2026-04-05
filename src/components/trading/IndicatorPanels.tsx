@@ -40,17 +40,41 @@ export default function IndicatorPanels({ klines, indicators }: Props) {
     const start = Math.max(0, klines.length - 100);
     return klines.slice(start).map((k, i) => {
       const idx = start + i;
+      // Calculate StochRSI from RSI values
+      const rsiArr = indicators.rsi;
+      let stochRsiK = NaN, stochRsiD = NaN;
+      const stochPeriod = 14;
+      if (idx >= stochPeriod + 13) {
+        const rsiSlice = rsiArr.slice(idx - stochPeriod + 1, idx + 1).filter(v => !isNaN(v));
+        if (rsiSlice.length >= stochPeriod) {
+          const hh = Math.max(...rsiSlice);
+          const ll = Math.min(...rsiSlice);
+          stochRsiK = hh === ll ? 50 : ((rsiArr[idx] - ll) / (hh - ll)) * 100;
+        }
+      }
+
+      // Calculate RVOL
+      const volArr = klines.map(k2 => k2.volume);
+      let rvol = 1;
+      if (idx >= 21) {
+        const avgVol = volArr.slice(idx - 20, idx).reduce((a, b) => a + b, 0) / 20;
+        rvol = avgVol > 0 ? volArr[idx] / avgVol : 1;
+      }
+
       return {
         time: k.time,
         timeLabel: formatTime(k.time),
         rsi: indicators.rsi[idx],
-        macd: indicators.macd.macdLine[idx],
-        macdSignal: indicators.macd.signalLine[idx],
-        macdHist: indicators.macd.histogram[idx],
+        bbUpper: indicators.bollingerBands.upper[idx],
+        bbMiddle: indicators.bollingerBands.middle[idx],
+        bbLower: indicators.bollingerBands.lower[idx],
+        close: k.close,
+        stochRsiK,
+        stochRsiD,
         stochK: indicators.stochastic.k[idx],
         stochD: indicators.stochastic.d[idx],
         volume: k.volume,
-        close: k.close,
+        rvol,
         obv: indicators.obv[idx],
         adx: indicators.adx.adx[idx],
         plusDI: indicators.adx.plusDI[idx],
@@ -79,18 +103,36 @@ export default function IndicatorPanels({ klines, indicators }: Props) {
         </ResponsiveContainer>
       </PanelWrapper>
 
-      {/* MACD */}
-      <PanelWrapper title="MACD (12,26,9)">
+      {/* Bollinger Bands */}
+      <PanelWrapper title="Bollinger Bands (20,2)">
         <ResponsiveContainer>
           <ComposedChart data={last100} {...chartCommon}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
             <XAxis dataKey="timeLabel" {...axisProps} hide />
-            <YAxis {...axisProps} width={40} />
+            <YAxis {...axisProps} width={50} domain={['auto', 'auto']} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
             <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 11 }} />
-            <ReferenceLine y={0} stroke="#374151" />
-            <Bar dataKey="macdHist" fill="#3b82f6" opacity={0.4} />
-            <Line type="monotone" dataKey="macd" stroke="#3b82f6" strokeWidth={1.5} dot={false} />
-            <Line type="monotone" dataKey="macdSignal" stroke="#f59e0b" strokeWidth={1} dot={false} />
+            <Area type="monotone" dataKey="bbUpper" stroke="transparent" fill="rgba(59,130,246,0.08)" />
+            <Area type="monotone" dataKey="bbLower" stroke="transparent" fill="transparent" />
+            <Line type="monotone" dataKey="bbUpper" stroke="#3b82f6" strokeWidth={1} dot={false} strokeDasharray="4 2" />
+            <Line type="monotone" dataKey="bbMiddle" stroke="#6b7280" strokeWidth={1} dot={false} />
+            <Line type="monotone" dataKey="bbLower" stroke="#3b82f6" strokeWidth={1} dot={false} strokeDasharray="4 2" />
+            <Line type="monotone" dataKey="close" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </PanelWrapper>
+
+      {/* StochRSI */}
+      <PanelWrapper title="StochRSI (14,14,3,3)">
+        <ResponsiveContainer>
+          <ComposedChart data={last100} {...chartCommon}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+            <XAxis dataKey="timeLabel" {...axisProps} hide />
+            <YAxis domain={[0, 100]} {...axisProps} width={30} />
+            <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 11 }} />
+            <ReferenceLine y={80} stroke="#ef4444" strokeDasharray="3 3" />
+            <ReferenceLine y={20} stroke="#22c55e" strokeDasharray="3 3" />
+            <Line type="monotone" dataKey="stochRsiK" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="K" />
+            <Line type="monotone" dataKey="stochRsiD" stroke="#f59e0b" strokeWidth={1} dot={false} name="D" />
           </ComposedChart>
         </ResponsiveContainer>
       </PanelWrapper>
@@ -111,15 +153,17 @@ export default function IndicatorPanels({ klines, indicators }: Props) {
         </ResponsiveContainer>
       </PanelWrapper>
 
-      {/* Volume */}
-      <PanelWrapper title="Volume">
+      {/* RVOL */}
+      <PanelWrapper title="RVOL (20)">
         <ResponsiveContainer>
           <ComposedChart data={last100} {...chartCommon}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
             <XAxis dataKey="timeLabel" {...axisProps} hide />
-            <YAxis {...axisProps} width={40} tickFormatter={(v) => `${(v / 1e3).toFixed(0)}k`} />
+            <YAxis {...axisProps} width={35} />
             <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 11 }} />
-            <Bar dataKey="volume" fill="rgba(59,130,246,0.4)" />
+            <ReferenceLine y={1.2} stroke="#22c55e" strokeDasharray="3 3" label={{ value: '1.2', fill: '#22c55e', fontSize: 9 }} />
+            <ReferenceLine y={1} stroke="#374151" />
+            <Bar dataKey="rvol" fill="rgba(59,130,246,0.4)" />
           </ComposedChart>
         </ResponsiveContainer>
       </PanelWrapper>

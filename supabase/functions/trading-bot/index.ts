@@ -125,23 +125,66 @@ function calcRSI(closes: number[], period = 14): number[] {
   return rsi;
 }
 
-function calcMACD(closes: number[], fast = 12, slow = 26, sig = 9) {
-  const emaFast = calcEMA(closes, fast);
-  const emaSlow = calcEMA(closes, slow);
-  const macdLine = emaFast.map((v, i) => v - emaSlow[i]);
-  const signalLine = calcEMA(macdLine, sig);
-  return { macdLine, signalLine };
+function calcBollingerBands(closes: number[], period = 20, stdDev = 2) {
+  const sma = calcSMA(closes, period);
+  const upper: number[] = [];
+  const lower: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) { upper.push(NaN); lower.push(NaN); continue; }
+    const slice = closes.slice(i - period + 1, i + 1);
+    const mean = sma[i];
+    const std = Math.sqrt(slice.reduce((sum, v) => sum + (v - mean) ** 2, 0) / period);
+    upper.push(mean + stdDev * std);
+    lower.push(mean - stdDev * std);
+  }
+  return { upper, middle: sma, lower };
 }
 
-function calcStochastic(highs: number[], lows: number[], closes: number[], period = 14, smoothK = 3) {
+function calcStochRSI(closes: number[], rsiPeriod = 14, stochPeriod = 14, smoothK = 3, smoothD = 3) {
+  const rsi = calcRSI(closes, rsiPeriod);
   const rawK: number[] = [];
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period - 1) { rawK.push(NaN); continue; }
-    const hh = Math.max(...highs.slice(i - period + 1, i + 1));
-    const ll = Math.min(...lows.slice(i - period + 1, i + 1));
-    rawK.push(hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100);
+  for (let i = 0; i < rsi.length; i++) {
+    if (isNaN(rsi[i]) || i < rsiPeriod + stochPeriod - 1) { rawK.push(NaN); continue; }
+    const slice = rsi.slice(i - stochPeriod + 1, i + 1).filter(v => !isNaN(v));
+    if (slice.length < stochPeriod) { rawK.push(NaN); continue; }
+    const hh = Math.max(...slice);
+    const ll = Math.min(...slice);
+    rawK.push(hh === ll ? 50 : ((rsi[i] - ll) / (hh - ll)) * 100);
   }
-  return calcSMA(rawK, smoothK);
+  const k = calcSMA(rawK, smoothK);
+  const d = calcSMA(k, smoothD);
+  return { k, d };
+}
+
+function calcADX(highs: number[], lows: number[], closes: number[], period = 14) {
+  const plusDM: number[] = [0];
+  const minusDM: number[] = [0];
+  const tr: number[] = [highs[0] - lows[0]];
+  for (let i = 1; i < closes.length; i++) {
+    const upMove = highs[i] - highs[i - 1];
+    const downMove = lows[i - 1] - lows[i];
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  const atr = calcEMA(tr, period);
+  const smoothPlusDM = calcEMA(plusDM, period);
+  const smoothMinusDM = calcEMA(minusDM, period);
+  const plusDI = smoothPlusDM.map((v, i) => atr[i] ? (v / atr[i]) * 100 : 0);
+  const minusDI = smoothMinusDM.map((v, i) => atr[i] ? (v / atr[i]) * 100 : 0);
+  const dx = plusDI.map((v, i) => {
+    const sum = v + minusDI[i];
+    return sum ? Math.abs(v - minusDI[i]) / sum * 100 : 0;
+  });
+  const adx = calcEMA(dx, period);
+  return { adx, plusDI, minusDI };
+}
+
+function calcRVOL(volumes: number[], period = 20): number {
+  const len = volumes.length;
+  if (len < period + 1) return 1;
+  const avgVol = volumes.slice(len - period - 1, len - 1).reduce((a, b) => a + b, 0) / period;
+  return avgVol > 0 ? volumes[len - 1] / avgVol : 1;
 }
 
 function calcATR(highs: number[], lows: number[], closes: number[], period = 14): number[] {
@@ -178,10 +221,18 @@ interface StrategySignal {
   atr14: number;
   volumeOk: boolean;
   pullbackDetected: boolean;
+  adxVal: number;
+  stochRsiK: number;
+  stochRsiD: number;
+  rvolVal: number;
+  bbUpper: number;
+  bbLower: number;
 }
 
 function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal {
   const reasoning: string[] = [];
+
+  // === H1 TREND FILTER (EMA 200) ===
   const h1Closes = h1Klines.map(k => k.close);
   const h1Ema200 = calcEMA(h1Closes, 200);
   const h1Last = h1Closes.length - 1;
@@ -190,109 +241,118 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
   const trendBias = h1Price > h1Ema200Val ? 'bullish' : 'bearish';
   reasoning.push(`1H: $${h1Price.toFixed(0)} ${trendBias === 'bullish' ? '>' : '<'} EMA200 $${h1Ema200Val.toFixed(0)} → ${trendBias.toUpperCase()}`);
 
+  // === M15 INDICATORS ===
   const closes = m15Klines.map(k => k.close);
   const highs = m15Klines.map(k => k.high);
   const lows = m15Klines.map(k => k.low);
+  const volumes = m15Klines.map(k => k.volume);
   const last = closes.length - 1;
   const price = closes[last];
 
   const ema20 = calcEMA(closes, 20);
   const ema50 = calcEMA(closes, 50);
-  const rsi = calcRSI(closes, 14);
   const atr14 = calcATR(highs, lows, closes, 14);
   const atr50 = calcATR(highs, lows, closes, 50);
-  const macd = calcMACD(closes);
-  const stoch = calcStochastic(highs, lows, closes);
+
+  // Bollinger Bands (20, 2)
+  const bb = calcBollingerBands(closes, 20, 2);
+  const bbUpper = bb.upper[last];
+  const bbLower = bb.lower[last];
+  const bbMiddle = bb.middle[last];
+
+  // StochRSI (14, 14, 3, 3)
+  const stochRsi = calcStochRSI(closes, 14, 14, 3, 3);
+  const stochK = stochRsi.k[last];
+  const stochD = stochRsi.d[last];
+  const prevStochK = stochRsi.k[last - 1];
+  const prevStochD = stochRsi.d[last - 1];
+
+  // ADX (14)
+  const adxResult = calcADX(highs, lows, closes, 14);
+  const adxVal = adxResult.adx[last];
+
+  // RVOL
+  const rvolVal = calcRVOL(volumes, 20);
 
   const ema20Val = ema20[last];
   const ema50Val = ema50[last];
-  const rsiVal = rsi[last];
+  const rsiVal = calcRSI(closes, 14)[last];
   const atr14Val = atr14[last];
   const atr50Val = atr50[last];
-  const macdVal = macd.macdLine[last];
-  const macdSig = macd.signalLine[last];
-  const prevMacd = macd.macdLine[last - 1];
-  const prevMacdSig = macd.signalLine[last - 1];
-  const stochVal = stoch[last];
 
   const atrRatio = atr50Val > 0 ? atr14Val / atr50Val : 1;
   const atrBlocked = atrRatio > 2;
   if (atrBlocked) reasoning.push(`🚫 ATR BLOCK: ATR14/ATR50 = ${atrRatio.toFixed(2)} > 2`);
 
-  const volumeOk = true;
-  const emaLongSetup = ema20Val > ema50Val;
-  const emaShortSetup = ema20Val < ema50Val;
-  const ema20Slope = ema20[last] - ema20[last - 3];
-  reasoning.push(`EMA20: $${ema20Val.toFixed(0)} | EMA50: $${ema50Val.toFixed(0)} | Slope: ${ema20Slope > 0 ? '↑' : '↓'} → ${emaLongSetup ? 'LONG' : emaShortSetup ? 'SHORT' : 'FLAT'}`);
-
-  const pullbackToEma20 = Math.abs(price - ema20Val) / price < 0.0015;
-  const pullbackBetween = emaLongSetup
-    ? (price <= ema20Val * 1.0005 && price >= ema50Val * 0.999)
-    : (price >= ema20Val * 0.9995 && price <= ema50Val * 1.001);
-  const pullbackDetected = pullbackToEma20 || pullbackBetween;
-  reasoning.push(`Pullback: ${pullbackDetected ? '✅' : '❌'} (EMA20: ${pullbackToEma20}, between: ${pullbackBetween})`);
-
-  const macdBullCross = prevMacd <= prevMacdSig && macdVal > macdSig;
-  const macdBearCross = prevMacd >= prevMacdSig && macdVal < macdSig;
-  const macdBullish = macdVal > macdSig;
-  reasoning.push(`MACD: ${macdVal.toFixed(1)} vs Sig: ${macdSig.toFixed(1)} → ${macdBullish ? 'BULL' : 'BEAR'}${macdBullCross ? ' (CROSS↑)' : macdBearCross ? ' (CROSS↓)' : ''}`);
-  reasoning.push(`Stoch: ${stochVal?.toFixed(1) || 'N/A'}`);
-  reasoning.push(`RSI(14): ${rsiVal.toFixed(1)}`);
+  reasoning.push(`BB: Upper $${bbUpper?.toFixed(0) || 'N/A'} | Lower $${bbLower?.toFixed(0) || 'N/A'} | Price $${price.toFixed(0)}`);
+  reasoning.push(`StochRSI: K=${stochK?.toFixed(1) || 'N/A'} D=${stochD?.toFixed(1) || 'N/A'}`);
+  reasoning.push(`ADX: ${adxVal?.toFixed(1) || 'N/A'} | RVOL: ${rvolVal.toFixed(2)}`);
 
   const noSignal: StrategySignal = {
     side: 'none', entryPrice: price, stopLoss: 0, takeProfit: 0, riskPerUnit: 0,
     reasoning, trendFilter: trendBias, atrBlocked, ema20: ema20Val, ema50: ema50Val,
-    rsi: rsiVal, atr14: atr14Val, volumeOk, pullbackDetected,
+    rsi: rsiVal, atr14: atr14Val, volumeOk: rvolVal > 1.2, pullbackDetected: false,
+    adxVal: adxVal || 0, stochRsiK: stochK || 0, stochRsiD: stochD || 0,
+    rvolVal, bbUpper: bbUpper || 0, bbLower: bbLower || 0,
   };
 
   if (atrBlocked) return noSignal;
 
-  // LONG: H1 bullish + 15m dipped
-  if (trendBias === 'bullish') {
-    const longPullback = price <= ema20Val * 1.003 && price >= ema50Val * 0.997;
-    const longRsiOk = rsiVal > 30 && rsiVal < 55;
-    const longMacdOk = macdBullish || macdBullCross || (macdVal > macdSig * 0.95);
+  // Check common filters
+  const adxOk = !isNaN(adxVal) && adxVal > 25;
+  const rvolOk = rvolVal > 1.2;
 
-    if (longPullback && longRsiOk && longMacdOk) {
+  if (!adxOk) { reasoning.push(`❌ ADX ${adxVal?.toFixed(1) || 'N/A'} < 25 — słaby trend`); return noSignal; }
+  if (!rvolOk) { reasoning.push(`❌ RVOL ${rvolVal.toFixed(2)} < 1.2 — za mały wolumen`); return noSignal; }
+
+  // === LONG ===
+  if (trendBias === 'bullish') {
+    const nearLowerBB = !isNaN(bbLower) && price <= bbLower * 1.005;
+    const stochCrossUp = !isNaN(stochK) && !isNaN(stochD) && !isNaN(prevStochK) && !isNaN(prevStochD)
+      && prevStochK <= prevStochD && stochK > stochD && stochK < 20;
+
+    if (nearLowerBB && stochCrossUp) {
       const sl = findSwingLow(lows, 15) - atr14Val * 0.2;
       const riskPerUnit = price - sl;
       if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
       const tp = price + riskPerUnit * 2.5;
-      reasoning.push(`✅ LONG ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
+      reasoning.push(`✅ LONG ENTRY @ $${price.toFixed(0)} | BB Lower touch + StochRSI cross ↑ oversold | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)}`);
       return { ...noSignal, side: 'long', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
     }
 
     const missing: string[] = [];
-    if (!longPullback) missing.push(`No pullback (price $${price.toFixed(0)} vs EMA20 $${ema20Val.toFixed(0)})`);
-    if (!longRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} outside 30-55`);
-    if (!longMacdOk) missing.push('MACD bearish');
-    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
+    if (!nearLowerBB) missing.push(`Price $${price.toFixed(0)} not near BB Lower $${bbLower?.toFixed(0) || 'N/A'}`);
+    if (!stochCrossUp) missing.push(`StochRSI no bullish cross in oversold (K=${stochK?.toFixed(1)}, D=${stochD?.toFixed(1)})`);
+    reasoning.push(`❌ NO LONG: ${missing.join(', ')}`);
     return noSignal;
   }
 
-  // SHORT: H1 bearish + 15m bounced UP
+  // === SHORT ===
   if (trendBias === 'bearish') {
-    const shortPullback = price >= ema20Val * 0.997 || (price > ema50Val * 0.995 && price < ema50Val * 1.005);
-    const shortRsiOk = rsiVal > 45;
+    const nearUpperBB = !isNaN(bbUpper) && price >= bbUpper * 0.995;
+    const stochCrossDown = !isNaN(stochK) && !isNaN(stochD) && !isNaN(prevStochK) && !isNaN(prevStochD)
+      && prevStochK >= prevStochD && stochK < stochD && stochK > 80;
 
-    if (shortPullback && shortRsiOk) {
+    if (nearUpperBB && stochCrossDown) {
       const sl = findSwingHigh(highs, 15) + atr14Val * 0.2;
       const riskPerUnit = sl - price;
       if (riskPerUnit <= 0 || riskPerUnit > price * 0.025) { reasoning.push('❌ Invalid SL'); return noSignal; }
       const tp = price - riskPerUnit * 2.5;
-      reasoning.push(`✅ SHORT ENTRY @ $${price.toFixed(0)} | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)} | R:R 1:2.5`);
+      reasoning.push(`✅ SHORT ENTRY @ $${price.toFixed(0)} | BB Upper touch + StochRSI cross ↓ overbought | SL: $${sl.toFixed(0)} | TP: $${tp.toFixed(0)}`);
       return { ...noSignal, side: 'short', entryPrice: price, stopLoss: sl, takeProfit: tp, riskPerUnit, pullbackDetected: true };
     }
 
     const missing: string[] = [];
-    if (!shortPullback) missing.push(`No pullback UP (price $${price.toFixed(0)} below EMA20 $${ema20Val.toFixed(0)})`);
-    if (!shortRsiOk) missing.push(`RSI ${rsiVal.toFixed(1)} < 45 (no bounce)`);
-    reasoning.push(`❌ NO ENTRY: ${missing.join(', ')}`);
+    if (!nearUpperBB) missing.push(`Price $${price.toFixed(0)} not near BB Upper $${bbUpper?.toFixed(0) || 'N/A'}`);
+    if (!stochCrossDown) missing.push(`StochRSI no bearish cross in overbought (K=${stochK?.toFixed(1)}, D=${stochD?.toFixed(1)})`);
+    reasoning.push(`❌ NO SHORT: ${missing.join(', ')}`);
     return noSignal;
   }
 
   return noSignal;
 }
+
+
 
 // ========== BACKTEST ENGINE ==========
 interface BacktestTrade {
@@ -908,7 +968,7 @@ serve(async (req) => {
     await supabase.from('bot_config').update({ current_balance: balance }).eq('id', config.id);
 
     await logBot(supabase, config.id, 'info',
-      `Tick: $${currentPrice.toFixed(2)} | Trend: ${signal.trendFilter} | EMA20: $${signal.ema20.toFixed(0)} | EMA50: $${signal.ema50.toFixed(0)} | RSI: ${signal.rsi.toFixed(1)} | Pullback: ${signal.pullbackDetected ? '✅' : '❌'} | Bal: $${balance.toFixed(2)}`);
+      `Tick: $${currentPrice.toFixed(2)} | Trend: ${signal.trendFilter} | ADX: ${signal.adxVal.toFixed(1)} | StochRSI K: ${signal.stochRsiK.toFixed(1)} D: ${signal.stochRsiD.toFixed(1)} | RVOL: ${signal.rvolVal.toFixed(2)} | BB: $${signal.bbLower.toFixed(0)}-$${signal.bbUpper.toFixed(0)} | Bal: $${balance.toFixed(2)}`);
 
     const { data: positions } = await supabase.from('bot_positions')
       .select('*').eq('bot_config_id', config.id).order('opened_at', { ascending: false }).limit(20);
