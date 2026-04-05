@@ -103,18 +103,36 @@ export default function IndicatorPanels({ klines, indicators }: Props) {
         </ResponsiveContainer>
       </PanelWrapper>
 
-      {/* MACD */}
-      <PanelWrapper title="MACD (12,26,9)">
+      {/* Bollinger Bands */}
+      <PanelWrapper title="Bollinger Bands (20,2)">
         <ResponsiveContainer>
           <ComposedChart data={last100} {...chartCommon}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
             <XAxis dataKey="timeLabel" {...axisProps} hide />
-            <YAxis {...axisProps} width={40} />
+            <YAxis {...axisProps} width={50} domain={['auto', 'auto']} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
             <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 11 }} />
-            <ReferenceLine y={0} stroke="#374151" />
-            <Bar dataKey="macdHist" fill="#3b82f6" opacity={0.4} />
-            <Line type="monotone" dataKey="macd" stroke="#3b82f6" strokeWidth={1.5} dot={false} />
-            <Line type="monotone" dataKey="macdSignal" stroke="#f59e0b" strokeWidth={1} dot={false} />
+            <Area type="monotone" dataKey="bbUpper" stroke="transparent" fill="rgba(59,130,246,0.08)" />
+            <Area type="monotone" dataKey="bbLower" stroke="transparent" fill="transparent" />
+            <Line type="monotone" dataKey="bbUpper" stroke="#3b82f6" strokeWidth={1} dot={false} strokeDasharray="4 2" />
+            <Line type="monotone" dataKey="bbMiddle" stroke="#6b7280" strokeWidth={1} dot={false} />
+            <Line type="monotone" dataKey="bbLower" stroke="#3b82f6" strokeWidth={1} dot={false} strokeDasharray="4 2" />
+            <Line type="monotone" dataKey="close" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </PanelWrapper>
+
+      {/* StochRSI */}
+      <PanelWrapper title="StochRSI (14,14,3,3)">
+        <ResponsiveContainer>
+          <ComposedChart data={last100} {...chartCommon}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+            <XAxis dataKey="timeLabel" {...axisProps} hide />
+            <YAxis domain={[0, 100]} {...axisProps} width={30} />
+            <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 11 }} />
+            <ReferenceLine y={80} stroke="#ef4444" strokeDasharray="3 3" />
+            <ReferenceLine y={20} stroke="#22c55e" strokeDasharray="3 3" />
+            <Line type="monotone" dataKey="stochRsiK" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="K" />
+            <Line type="monotone" dataKey="stochRsiD" stroke="#f59e0b" strokeWidth={1} dot={false} name="D" />
           </ComposedChart>
         </ResponsiveContainer>
       </PanelWrapper>
