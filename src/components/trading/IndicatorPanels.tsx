@@ -40,17 +40,41 @@ export default function IndicatorPanels({ klines, indicators }: Props) {
     const start = Math.max(0, klines.length - 100);
     return klines.slice(start).map((k, i) => {
       const idx = start + i;
+      // Calculate StochRSI from RSI values
+      const rsiArr = indicators.rsi;
+      let stochRsiK = NaN, stochRsiD = NaN;
+      const stochPeriod = 14;
+      if (idx >= stochPeriod + 13) {
+        const rsiSlice = rsiArr.slice(idx - stochPeriod + 1, idx + 1).filter(v => !isNaN(v));
+        if (rsiSlice.length >= stochPeriod) {
+          const hh = Math.max(...rsiSlice);
+          const ll = Math.min(...rsiSlice);
+          stochRsiK = hh === ll ? 50 : ((rsiArr[idx] - ll) / (hh - ll)) * 100;
+        }
+      }
+
+      // Calculate RVOL
+      const volArr = klines.map(k2 => k2.volume);
+      let rvol = 1;
+      if (idx >= 21) {
+        const avgVol = volArr.slice(idx - 20, idx).reduce((a, b) => a + b, 0) / 20;
+        rvol = avgVol > 0 ? volArr[idx] / avgVol : 1;
+      }
+
       return {
         time: k.time,
         timeLabel: formatTime(k.time),
         rsi: indicators.rsi[idx],
-        macd: indicators.macd.macdLine[idx],
-        macdSignal: indicators.macd.signalLine[idx],
-        macdHist: indicators.macd.histogram[idx],
+        bbUpper: indicators.bollingerBands.upper[idx],
+        bbMiddle: indicators.bollingerBands.middle[idx],
+        bbLower: indicators.bollingerBands.lower[idx],
+        close: k.close,
+        stochRsiK,
+        stochRsiD,
         stochK: indicators.stochastic.k[idx],
         stochD: indicators.stochastic.d[idx],
         volume: k.volume,
-        close: k.close,
+        rvol,
         obv: indicators.obv[idx],
         adx: indicators.adx.adx[idx],
         plusDI: indicators.adx.plusDI[idx],
