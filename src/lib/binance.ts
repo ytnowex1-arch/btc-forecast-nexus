@@ -1,5 +1,7 @@
-// MEXC Futures API client (replaces Binance)
-const BASE_URL = 'https://contract.mexc.com/api/v1/contract';
+// MEXC Futures API client via Supabase proxy (avoids CORS)
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const PROXY_URL = `${SUPABASE_URL}/functions/v1/mexc-proxy`;
 
 export interface Kline {
   time: number;
@@ -10,7 +12,6 @@ export interface Kline {
   volume: number;
 }
 
-// Map our internal interval codes to MEXC kline interval names
 const MEXC_INTERVALS: Record<string, string> = {
   '5m': 'Min5',
   '15m': 'Min15',
@@ -20,13 +21,22 @@ const MEXC_INTERVALS: Record<string, string> = {
   '1w': 'Week1',
 };
 
+async function mexcFetch(endpoint: string, params: Record<string, string> = {}): Promise<any> {
+  const qs = new URLSearchParams({ endpoint, ...params });
+  const res = await fetch(`${PROXY_URL}?${qs.toString()}`);
+  if (!res.ok) throw new Error(`MEXC proxy error: ${res.status}`);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  if (!json.success) throw new Error(`MEXC API error: ${json.code}`);
+  return json;
+}
+
 export async function fetchKlines(
   symbol = 'BTC_USDT',
   interval = '1h',
   limit = 500
 ): Promise<Kline[]> {
   const mexcInterval = MEXC_INTERVALS[interval] || 'Min60';
-  // Calculate start time to get enough bars
   const intervalSeconds: Record<string, number> = {
     '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800,
   };
@@ -34,12 +44,11 @@ export async function fetchKlines(
   const end = Math.floor(Date.now() / 1000);
   const start = end - (limit * seconds);
 
-  const res = await fetch(
-    `${BASE_URL}/kline/${symbol}?interval=${mexcInterval}&start=${start}&end=${end}`
-  );
-  if (!res.ok) throw new Error(`MEXC API error: ${res.status}`);
-  const json = await res.json();
-  if (!json.success) throw new Error(`MEXC API error: ${json.code}`);
+  const json = await mexcFetch(`kline/${symbol}`, {
+    interval: mexcInterval,
+    start: String(start),
+    end: String(end),
+  });
 
   const data = json.data;
   const times: number[] = data.time || [];
@@ -66,18 +75,12 @@ export async function fetchKlines(
 }
 
 export async function fetchCurrentPrice(symbol = 'BTC_USDT'): Promise<number> {
-  const res = await fetch(`${BASE_URL}/ticker?symbol=${symbol}`);
-  if (!res.ok) throw new Error(`MEXC API error: ${res.status}`);
-  const json = await res.json();
-  if (!json.success) throw new Error(`MEXC API error: ${json.code}`);
+  const json = await mexcFetch('ticker', { symbol });
   return json.data.lastPrice;
 }
 
 export async function fetch24hStats(symbol = 'BTC_USDT') {
-  const res = await fetch(`${BASE_URL}/ticker?symbol=${symbol}`);
-  if (!res.ok) throw new Error(`MEXC API error: ${res.status}`);
-  const json = await res.json();
-  if (!json.success) throw new Error(`MEXC API error: ${json.code}`);
+  const json = await mexcFetch('ticker', { symbol });
   const d = json.data;
   return {
     priceChangePercent: String((d.riseFallRate || 0) * 100),
