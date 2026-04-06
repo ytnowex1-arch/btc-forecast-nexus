@@ -25,53 +25,56 @@ type View = 'analysis' | 'bot';
 export default function Index() {
   const [interval, setInterval] = useState('1h');
   const [view, setView] = useState<View>('bot');
+  const [activeSymbol, setActiveSymbol] = useState('BTC_USDT');
   const projPeriods = INTERVALS.find(i => i.value === interval)?.projPeriods ?? 72;
 
+  const symbolLabel = activeSymbol.replace('_USDT', '');
+
   const { data: klines, isLoading, error } = useQuery({
-    queryKey: ['klines', interval],
-    queryFn: () => fetchKlines('BTC_USDT', interval, 500),
+    queryKey: ['klines', activeSymbol, interval],
+    queryFn: () => fetchKlines(activeSymbol, interval, 500),
     refetchInterval: 30000,
     staleTime: 15000,
   });
 
   const { data: stats } = useQuery({
-    queryKey: ['stats'],
-    queryFn: () => fetch24hStats('BTC_USDT'),
+    queryKey: ['stats', activeSymbol],
+    queryFn: () => fetch24hStats(activeSymbol),
     refetchInterval: 10000,
   });
 
   // Multi-timeframe data
   const { data: h1Klines } = useQuery({
-    queryKey: ['klines', '1h', 'strategy'],
-    queryFn: () => fetchKlines('BTC_USDT', '1h', 300),
+    queryKey: ['klines', activeSymbol, '1h', 'strategy'],
+    queryFn: () => fetchKlines(activeSymbol, '1h', 300),
     refetchInterval: 60000,
     staleTime: 30000,
   });
 
   const { data: m5Klines } = useQuery({
-    queryKey: ['klines', '5m', 'strategy'],
-    queryFn: () => fetchKlines('BTC_USDT', '5m', 300),
+    queryKey: ['klines', activeSymbol, '5m', 'strategy'],
+    queryFn: () => fetchKlines(activeSymbol, '5m', 300),
     refetchInterval: 30000,
     staleTime: 15000,
   });
 
   const { data: m15Klines } = useQuery({
-    queryKey: ['klines', '15m', 'projection'],
-    queryFn: () => fetchKlines('BTC_USDT', '15m', 300),
+    queryKey: ['klines', activeSymbol, '15m', 'projection'],
+    queryFn: () => fetchKlines(activeSymbol, '15m', 300),
     refetchInterval: 60000,
     staleTime: 30000,
   });
 
   const { data: h4Klines } = useQuery({
-    queryKey: ['klines', '4h', 'projection'],
-    queryFn: () => fetchKlines('BTC_USDT', '4h', 300),
+    queryKey: ['klines', activeSymbol, '4h', 'projection'],
+    queryFn: () => fetchKlines(activeSymbol, '4h', 300),
     refetchInterval: 120000,
     staleTime: 60000,
   });
 
   const { data: dailyKlines } = useQuery({
-    queryKey: ['klines', '1d', 'strategy'],
-    queryFn: () => fetchKlines('BTC_USDT', '1d', 30),
+    queryKey: ['klines', activeSymbol, '1d', 'strategy'],
+    queryFn: () => fetchKlines(activeSymbol, '1d', 30),
     refetchInterval: 300000,
     staleTime: 60000,
   });
@@ -157,7 +160,7 @@ export default function Index() {
         <div className="flex items-center gap-4">
           <div>
             <h1 className="text-xl font-bold font-mono tracking-tight flex items-center gap-2">
-              <span className="text-primary">₿</span> BTC/USDT
+              <span className="text-primary">₿</span> {symbolLabel}/USDT
               {isLoading && (
                 <span className="inline-block w-2 h-2 bg-warning rounded-full animate-pulse-glow" />
               )}
@@ -196,7 +199,7 @@ export default function Index() {
         </div>
       </motion.header>
 
-      <BotDashboard />
+      <BotDashboard onSymbolChange={setActiveSymbol} />
 
       <div className="text-center text-[10px] font-mono text-muted-foreground py-4 border-t border-border">
         Dane z MEXC Futures API • Odświeżanie co 30s • Multi-Timeframe Strategy (H1 + M15) •
