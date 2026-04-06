@@ -259,6 +259,7 @@ export default function BotDashboard({ onSymbolChange }: { onSymbolChange?: (sym
     setExecuting(true);
     await callBot({ action: 'reset_balance', config_id: config.id, new_balance: amount });
     await fetchStatus();
+    setBacktestResult(null);
     setExecuting(false);
   };
 
