@@ -370,8 +370,8 @@ interface BacktestResult {
 }
 
 // ========== ROI SL CONSTANTS ==========
-const TRAIL_ACTIVATION_ROI = 20; // start trailing after +20% ROI
-const TRAIL_GAP_ROI = 20; // keep SL 20% ROI behind
+const TRAIL_ACTIVATION_ROI = 10; // start trailing after +20% ROI
+const TRAIL_GAP_ROI = 10; // keep SL 20% ROI behind
 const INITIAL_SL_ROI = 20; // initial fixed SL at -20% ROI
 
 function runBacktest(h1Klines: Kline[], m15Klines: Kline[], initialBalance: number, riskPct: number, leverage: number): BacktestResult {
