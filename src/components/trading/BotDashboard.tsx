@@ -242,6 +242,7 @@ export default function BotDashboard({ onSymbolChange }: { onSymbolChange?: (sym
   const resetBot = async () => {
     if (!config) return;
     if (!confirm(`Resetować bota ${SYMBOL_LABELS[config.symbol]}? Wszystkie otwarte pozycje zostaną zamknięte.`)) return;
+    setBacktestResult(null);
     setExecuting(true);
     await callBot({ action: 'reset', config_id: config.id });
     await fetchStatus();
