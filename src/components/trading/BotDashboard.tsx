@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/integrations/supabase/client';
 
+import { fetchCurrentPrice } from '@/lib/binance';
+
 interface BotConfig {
   id: string;
   name: string;
@@ -61,9 +63,14 @@ const SYMBOL_LABELS: Record<string, string> = {
   BNB_USDT: 'BNB',
 };
 
-export default function BotDashboard() {
+export default function BotDashboard({ onSymbolChange }: { onSymbolChange?: (symbol: string) => void }) {
   const [configs, setConfigs] = useState<BotConfig[]>([]);
-  const [activeSymbol, setActiveSymbol] = useState<string>('BTC_USDT');
+  const [activeSymbol, setActiveSymbolInternal] = useState<string>('BTC_USDT');
+
+  const setActiveSymbol = (s: string) => {
+    setActiveSymbolInternal(s);
+    onSymbolChange?.(s);
+  };
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -84,14 +91,10 @@ export default function BotDashboard() {
     const fetchPrices = async () => {
       try {
         const symbols = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'BNB_USDT'];
-        const results = await Promise.all(
-          symbols.map(s => fetch(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${s}`).then(r => r.json()))
-        );
+        const results = await Promise.allSettled(symbols.map(s => fetchCurrentPrice(s)));
         const newPrices: Record<string, number> = {};
-        symbols.forEach((s, i) => {
-          if (results[i]?.success && results[i]?.data?.lastPrice) {
-            newPrices[s] = results[i].data.lastPrice;
-          }
+        results.forEach((r, i) => {
+          if (r.status === 'fulfilled') newPrices[symbols[i]] = r.value;
         });
         setPrices(newPrices);
       } catch (e) { /* ignore */ }
