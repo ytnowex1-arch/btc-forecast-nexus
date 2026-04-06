@@ -32,10 +32,11 @@ serve(async (req) => {
 
     const res = await fetch(mexcUrl);
     const body = await res.text();
+    const contentType = res.headers.get('content-type') ?? 'application/json';
 
     return new Response(body, {
       status: res.status,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': contentType },
     });
   } catch (error) {
     return new Response(JSON.stringify({ error: (error as Error).message }), {
