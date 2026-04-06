@@ -291,7 +291,7 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
   const noSignal: StrategySignal = {
     side: 'none', entryPrice: price, stopLoss: 0, takeProfit: 0, riskPerUnit: 0,
     reasoning, trendFilter: trendBias, atrBlocked, ema20: ema20Val, ema50: ema50Val,
-    rsi: rsiVal, atr14: atr14Val, volumeOk: rvolVal > 1.2, pullbackDetected: false,
+    rsi: rsiVal, atr14: atr14Val, volumeOk: rvolVal > 0.5, pullbackDetected: false,
     adxVal: adxVal || 0, stochRsiK: stochK || 0, stochRsiD: stochD || 0,
     rvolVal, bbUpper: bbUpper || 0, bbLower: bbLower || 0,
   };
@@ -300,10 +300,10 @@ function analyzeStrategy(h1Klines: Kline[], m15Klines: Kline[]): StrategySignal 
 
   // Check common filters
   const adxOk = !isNaN(adxVal) && adxVal > 25;
-  const rvolOk = rvolVal > 1.2;
+  const rvolOk = rvolVal > 0.5;
 
   if (!adxOk) { reasoning.push(`❌ ADX ${adxVal?.toFixed(1) || 'N/A'} < 25 — słaby trend`); return noSignal; }
-  if (!rvolOk) { reasoning.push(`❌ RVOL ${rvolVal.toFixed(2)} < 1.2 — za mały wolumen`); return noSignal; }
+  if (!rvolOk) { reasoning.push(`❌ RVOL ${rvolVal.toFixed(2)} < 0.5 — za mały wolumen`); return noSignal; }
 
   // === LONG ===
   if (trendBias === 'bullish') {
