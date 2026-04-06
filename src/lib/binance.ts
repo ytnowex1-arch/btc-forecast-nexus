@@ -1,4 +1,5 @@
-// MEXC Futures API client via Supabase proxy
+// MEXC Futures API client via Supabase proxy (avoids CORS)
+
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const PROXY_URL = `${SUPABASE_URL}/functions/v1/mexc-proxy`;
 
@@ -20,31 +21,14 @@ const MEXC_INTERVALS: Record<string, string> = {
   '1w': 'Week1',
 };
 
-/**
- * Formatuje symbol na standard MEXC Futures (np. BTC_USDT)
- */
-function formatSymbol(symbol: string): string {
-  if (!symbol) return 'BTC_USDT';
-  const clean = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (clean.includes('_')) return clean;
-  if (clean.endsWith('USDT')) {
-    return `${clean.slice(0, -4)}_USDT`;
-  }
-  return `${clean}_USDT`;
-}
-
 async function mexcFetch(endpoint: string, params: Record<string, string> = {}): Promise<any> {
-  try {
-    const qs = new URLSearchParams({ endpoint, ...params });
-    const res = await fetch(`${PROXY_URL}?${qs.toString()}`);
-    
-    if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
-    
-    const json = await res.json();
-    return json;
-  } catch (err) {
-    return { success: false, error: 'Network error' };
-  }
+  const qs = new URLSearchParams({ endpoint, ...params });
+  const res = await fetch(`${PROXY_URL}?${qs.toString()}`);
+  if (!res.ok) throw new Error(`MEXC proxy error: ${res.status}`);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  if (!json.success) throw new Error(`MEXC API error: ${json.code}`);
+  return json;
 }
 
 export async function fetchKlines(
@@ -52,60 +36,57 @@ export async function fetchKlines(
   interval = '1h',
   limit = 500
 ): Promise<Kline[]> {
-  const formattedSymbol = formatSymbol(symbol);
   const mexcInterval = MEXC_INTERVALS[interval] || 'Min60';
-  
   const intervalSeconds: Record<string, number> = {
     '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800,
   };
-  
   const seconds = intervalSeconds[interval] || 3600;
   const end = Math.floor(Date.now() / 1000);
   const start = end - (limit * seconds);
 
-  // Endpoint kline wymaga symbolu w ścieżce, co proxy przekazuje dalej
-  const json = await mexcFetch(`kline/${formattedSymbol}`, {
+  const json = await mexcFetch(`kline/${symbol}`, {
     interval: mexcInterval,
     start: String(start),
     end: String(end),
   });
 
-  // Bezpieczne sprawdzanie danych
-  if (!json || !json.success || !json.data || !Array.isArray(json.data.time)) {
-    console.warn("MEXC Klines data invalid or missing:", json);
-    return [];
-  }
-
   const data = json.data;
+  const times: number[] = data.time || [];
+  const opens: number[] = data.open || [];
+  const highs: number[] = data.high || [];
+  const lows: number[] = data.low || [];
+  const closes: number[] = data.close || [];
+  const vols: number[] = data.vol || [];
+
   const klines: Kline[] = [];
-  
-  try {
-    for (let i = 0; i < data.time.length; i++) {
-      klines.push({
-        time: Number(data.time[i]),
-        open: Number(data.open[i] || 0),
-        high: Number(data.high[i] || 0),
-        low: Number(data.low[i] || 0),
-        close: Number(data.close[i] || 0),
-        volume: Number(data.vol[i] || 0),
-      });
-    }
-  } catch (e) {
-    console.error("Error parsing klines loop:", e);
+  const count = Math.min(times.length, limit);
+  const startIdx = Math.max(0, times.length - count);
+  for (let i = startIdx; i < times.length; i++) {
+    klines.push({
+      time: times[i],
+      open: opens[i],
+      high: highs[i],
+      low: lows[i],
+      close: closes[i],
+      volume: vols[i],
+    });
   }
-  
   return klines;
 }
 
 export async function fetchCurrentPrice(symbol = 'BTC_USDT'): Promise<number> {
-  const formattedSymbol = formatSymbol(symbol);
-  const json = await mexcFetch('ticker', { symbol: formattedSymbol });
-  
-  // MEXC API V1 dla /ticker zwraca obiekt w data, gdzie jest lastPrice
-  if (json && json.success && json.data && json.data.lastPrice !== undefined) {
-    return Number(json.data.lastPrice);
-  }
+  const json = await mexcFetch('ticker', { symbol });
+  return json.data.lastPrice;
+}
 
-  console.warn(`Could not fetch price for ${formattedSymbol}`, json);
-  return 0; // Zwracamy 0 zamiast błędu, żeby nie "wywalić" UI
+export async function fetch24hStats(symbol = 'BTC_USDT') {
+  const json = await mexcFetch('ticker', { symbol });
+  const d = json.data;
+  return {
+    priceChangePercent: String((d.riseFallRate || 0) * 100),
+    volume: String(d.amount24 || 0),
+    highPrice: String(d.high24Price || 0),
+    lowPrice: String(d.lower24Price || 0),
+    lastPrice: String(d.lastPrice || 0),
+  };
 }
